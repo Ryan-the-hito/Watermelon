@@ -1,4 +1,4 @@
-# Watermelon
+# Watermelon: A markdown editor tool for bionic reading
 
 Copy your text, click menu, paste it in your markdown editor, and enjoy fast reading!
 
