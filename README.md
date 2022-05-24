@@ -1,4 +1,4 @@
-# Watermelon: A markdown editor tool for bionic reading
+# Watermelon: A Markdown Editor Tool for Bionic Reading
 
 Copy your text, click menu, paste it in your markdown editor, and enjoy fast reading!
 
@@ -14,6 +14,9 @@ Toggle on or off with one click!
 ## Improvements and version history
 ### Improvements
 ### Version history
+#### v1.1.1 (May 25 2022)
+- Bug fix: when there is 'ing' after 'ing', the bolding would get wrong.
+
 #### v1.1.0 (May 25 2022)
 - Added batter splitting function for 'ing' words.
 
