@@ -20,4 +20,4 @@ Toggle on or off with one click!
 
 #### v1.0.0 (May 24 2022)
 
-The first version.
+- The first version.
