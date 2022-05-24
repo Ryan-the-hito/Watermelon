@@ -1,5 +1,4 @@
 # Watermelon
-## Introduction
 
 Copy your text, click menu, paste it in your markdown editor, and enjoy fast reading!
 
