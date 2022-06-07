@@ -14,6 +14,9 @@ Toggle on or off with one click!
 ## Improvements and version history
 ### Improvements
 ### Version history
+#### v1.1.2 (Jun 7 2022)
+- Now the app hides dock icon by default.
+
 #### v1.1.1 (May 25 2022)
 - Bug fix: when there is 'ing' after 'ing', the bolding would get wrong.
 
