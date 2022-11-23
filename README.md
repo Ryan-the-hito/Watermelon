@@ -1,4 +1,4 @@
-# Watermelon: A Markdown Editor Tool for Bionic Reading
+# 🍉Watermelon: A Markdown Editor Tool for Bionic Reading
 
 Copy your text, click menu, paste it in your markdown editor, and enjoy fast reading!
 
