@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (QWidget, QPushButton, QApplication,
 							 QLabel, QHBoxLayout, QVBoxLayout, QLineEdit,
 							 QSystemTrayIcon, QMenu, QComboBox, QDialog,
 							 QDialogButtonBox, QMenuBar, QFrame, QFileDialog,
-							 QPlainTextEdit, QSplitter, QTextEdit, QListWidget, QCheckBox)
+							 QPlainTextEdit, QSplitter, QTextEdit, QListWidget, QCheckBox, QSlider)
 from PyQt6.QtCore import Qt, QPropertyAnimation, QRect
 from PyQt6.QtGui import QAction, QIcon, QColor
 import PyQt6.QtGui
@@ -132,7 +132,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg2.setLayout(blay2)
 
 		widg3 = QWidget()
-		lbl1 = QLabel('Version 2.0.1', self)
+		lbl1 = QLabel('Version 2.0.2', self)
 		blay3 = QHBoxLayout()
 		blay3.setContentsMargins(0, 0, 0, 0)
 		blay3.addStretch()
@@ -595,7 +595,7 @@ class window_update(QWidget):  # 增加更新页面（Check for Updates）
 
 	def initUI(self):  # 说明页面内信息
 
-		self.lbl = QLabel('Current Version: v2.0.1', self)
+		self.lbl = QLabel('Current Version: v2.0.2', self)
 		self.lbl.move(30, 45)
 
 		lbl0 = QLabel('Download Update:', self)
@@ -1055,6 +1055,8 @@ The window will float at top all the time as you focus on typing. If you want to
 			endbio = self.addb2(previewtext.replace('*', ''))
 			endhtmlbio = self.md2html(endbio)
 			self.topright.setHtml(endhtmlbio)
+
+			self.scrollchanged()
 
 	def scrollchanged(self):
 		if self.bottom.verticalScrollBar().maximum() != 0:
@@ -1832,11 +1834,26 @@ class window4(QWidget):  # Customization settings
 		self.checkBox0.setChecked(True)
 		self.checkBox0.clicked.connect(self.auto_scroll)
 
+		lbl1 = QLabel("Font size: ", self)
+		self.lbl2 = QLabel("14 ", self)
+		sld = QSlider(Qt.Orientation.Horizontal, self)
+		sld.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+		sld.setRange(14, 50)
+		sld.valueChanged[int].connect(self.value_change)
+		wid2 = QWidget()
+		b42 = QHBoxLayout()
+		b42.setContentsMargins(0, 0, 0, 0)
+		b42.addWidget(lbl1)
+		b42.addWidget(self.lbl2)
+		b42.addWidget(sld)
+		wid2.setLayout(b42)
+
 		main_h_box = QVBoxLayout()
 		main_h_box.addWidget(wid0)
 		main_h_box.addWidget(wid1)
 		main_h_box.addWidget(wid11)
 		main_h_box.addWidget(self.checkBox0)
+		main_h_box.addWidget(wid2)
 		main_h_box.addStretch()
 		self.setLayout(main_h_box)
 
@@ -1964,6 +1981,15 @@ class window4(QWidget):  # Customization settings
 			w3.scrollbar.valueChanged.connect(w3.scrollchanged)
 		if not self.checkBox0.isChecked():
 			w3.scrollbar.valueChanged.disconnect(w3.scrollchanged)
+
+	def value_change(self, value):
+		self.lbl2.setText(str(value))
+		self.lbl2.adjustSize()
+		w3.setStyleSheet(f'''
+			QTextEdit{{
+				font: {value}pt Times New Roman;
+			}}
+		''')
 
 	def activate(self):  # 设置窗口显示
 		self.show()
