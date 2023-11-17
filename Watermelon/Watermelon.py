@@ -8,7 +8,8 @@ import codecs
 from PyQt6.QtWidgets import (QWidget, QPushButton, QApplication,
 							 QLabel, QHBoxLayout, QVBoxLayout, QLineEdit,
 							 QSystemTrayIcon, QMenu, QComboBox, QDialog,
-							 QDialogButtonBox, QMenuBar, QFrame, QFileDialog, QPlainTextEdit, QSplitter, QTextEdit)
+							 QDialogButtonBox, QMenuBar, QFrame, QFileDialog,
+							 QPlainTextEdit, QSplitter, QTextEdit, QListWidget, QCheckBox)
 from PyQt6.QtCore import Qt, QPropertyAnimation, QRect
 from PyQt6.QtGui import QAction, QIcon, QColor
 import PyQt6.QtGui
@@ -43,10 +44,10 @@ tray.setVisible(True)
 
 # Create the menu
 menu = QMenu()
-action1 = QAction("🦾 Bold Text!")
+action1 = QAction("🦾 Bold Text! (Clipboard)")
 menu.addAction(action1)
 
-action4 = QAction("💪 Unbold Text!")
+action4 = QAction("💪 Unbold Text! (Clipboard)")
 menu.addAction(action4)
 
 menu.addSeparator()
@@ -131,7 +132,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg2.setLayout(blay2)
 
 		widg3 = QWidget()
-		lbl1 = QLabel('Version 2.0.0', self)
+		lbl1 = QLabel('Version 2.0.1', self)
 		blay3 = QHBoxLayout()
 		blay3.setContentsMargins(0, 0, 0, 0)
 		blay3.addStretch()
@@ -594,7 +595,7 @@ class window_update(QWidget):  # 增加更新页面（Check for Updates）
 
 	def initUI(self):  # 说明页面内信息
 
-		self.lbl = QLabel('Current Version: v2.0.0', self)
+		self.lbl = QLabel('Current Version: v2.0.1', self)
 		self.lbl.move(30, 45)
 
 		lbl0 = QLabel('Download Update:', self)
@@ -709,12 +710,12 @@ class window3(QWidget):  # 主窗口
 		self.topleft = QTextEdit(self)
 		self.topleft.setMaximumHeight(SCREEN_HEIGHT - 200)
 		self.topleft.setReadOnly(True)
-		self.topleft.setDisabled(True)
+		#self.topleft.setDisabled(True)
 
 		self.topright = QTextEdit(self)
 		self.topright.setMaximumHeight(SCREEN_HEIGHT - 200)
 		self.topright.setReadOnly(True)
-		self.topright.setDisabled(True)
+		#self.topright.setDisabled(True)
 
 		self.bottom = QTextEdit(self)
 		self.bottom.setFixedWidth(1235)
@@ -780,7 +781,13 @@ class window3(QWidget):  # 主窗口
 		fulldir3 = os.path.join(fulldir1, tarname3)
 		if not os.path.exists(fulldir3):
 			with open(fulldir3, 'a', encoding='utf-8') as f0:
-				f0.write('This is your very first note stored in [Home]/WatermelonAppPath/Note 001.md. \n\n**Just write what you want and start enjoying typing!**')
+				f0.write('''This is your very first note stored in [Home]/WatermelonAppPath/Note 001.md. 
+
+**Just write what you want and start enjoying typing!**
+
+The top-left panel is the realtime Markdown, and the top-right one is the bionic Markdown. You can change the size of each panel.
+			
+The window will float at top all the time as you focus on typing. If you want to minimize if, press the BLUE BAR.''')
 		tarname2 = "DoNotDelete.txt"
 		fulldir2 = os.path.join(fulldir1, tarname2)
 		if not os.path.exists(fulldir2):
@@ -800,7 +807,7 @@ class window3(QWidget):  # 主窗口
 			namelist.append(pathslist[i].split('||')[0])
 		self.widget0.addItems(namelist)
 
-		self.btn_sub3 = QPushButton('Save', self)
+		self.btn_sub3 = QPushButton('Export', self)
 		self.btn_sub3.clicked.connect(self.export_file)
 		self.btn_sub3.setFixedSize(230, 20)
 
@@ -840,6 +847,24 @@ class window3(QWidget):  # 主窗口
 				color: #FFFFFF''')
 		self.btn_00.move(160, SCREEN_HEIGHT - 35)
 
+		self.btn0_1 = QPushButton('', self)
+		self.btn0_1.setFixedSize(25, 25)
+		self.btn0_1.setStyleSheet('''
+				QPushButton{
+				border: transparent;
+				background-color: transparent;
+				border-image: url(/Applications/Watermelon.app/Contents/Resources/set2.png);
+				}
+				QPushButton:pressed{
+				border: 1px outset grey;
+				background-color: #0085FF;
+				border-radius: 4px;
+				padding: 1px;
+				color: #FFFFFF
+				}
+				''')
+		self.btn0_1.move(35, SCREEN_HEIGHT - 185)
+
 		currentfile = int(codecs.open(fulldir4, 'r', encoding='utf-8').read())
 		try:
 			targetpath = pathslist[currentfile].split('||')[1]
@@ -874,6 +899,7 @@ class window3(QWidget):  # 主窗口
 		self.qw0.raise_()
 		self.qw1.raise_()
 		self.btn_00.raise_()
+		self.btn0_1.raise_()
 
 		self.assigntoall()
 
@@ -939,6 +965,7 @@ class window3(QWidget):  # 主窗口
 			self.qw0.setVisible(True)
 			self.qw1.setVisible(True)
 			self.l1.setVisible(True)
+			self.btn0_1.setVisible(True)
 			self.setFixedSize(1520, SCREEN_HEIGHT)
 			x_center = int(SCREEN_WEIGHT / 2) - 760
 			y_center = 0
@@ -957,6 +984,7 @@ class window3(QWidget):  # 主窗口
 			self.qw0.setVisible(False)
 			self.qw1.setVisible(False)
 			self.l1.setVisible(False)
+			self.btn0_1.setVisible(False)
 			self.setFixedSize(100, 10)
 			x_center = int(SCREEN_WEIGHT / 2) - 50
 			y_center = 10
@@ -968,6 +996,7 @@ class window3(QWidget):  # 主窗口
 		self.qw0.raise_()
 		self.qw1.raise_()
 		self.btn_00.raise_()
+		self.btn0_1.raise_()
 
 	def text_change(self):
 		if self.bottom.toPlainText() != '':
@@ -1765,38 +1794,49 @@ class window4(QWidget):  # Customization settings
 		font.setBold(True)
 		lbl0.setFont(font)
 		b40 = QHBoxLayout()
-		b40.setContentsMargins(10, 10, 10, 10)
+		b40.setContentsMargins(0, 0, 0, 0)
 		b40.addStretch()
 		b40.addWidget(lbl0)
 		b40.addStretch()
 		wid0.setLayout(b40)
 
 		wid1 = QWidget()
-		self.text_feed = QTextEdit(self)
+		self.text_feed = QListWidget(self)
 		self.text_feed.setFixedWidth(550)
 		self.text_feed.setFixedHeight(340)
-		self.text_feed.setPlaceholderText('A record a line, with the first part being the title, and the second being the path.')
+		self.text_feed.itemSelectionChanged.connect(self.item_click)
 		b41 = QHBoxLayout()
-		b41.setContentsMargins(10, 10, 10, 10)
+		b41.setContentsMargins(0, 0, 0, 0)
 		b41.addWidget(self.text_feed)
 		wid1.setLayout(b41)
 
 		wid11 = QWidget()
+		self.btn4_1 = QPushButton('Delete', self)
+		self.btn4_1.setMaximumHeight(20)
+		self.btn4_1.setFixedWidth(250)
+		self.btn4_1.setVisible(False)
+		self.btn4_1.clicked.connect(self.delete_item)
 		btn4_11 = QPushButton('Save', self)
 		btn4_11.clicked.connect(self.SaveFeed)
 		btn4_11.setMaximumHeight(20)
 		btn4_11.setFixedWidth(250)
 		b411 = QHBoxLayout()
-		b411.setContentsMargins(10, 10, 10, 10)
+		b411.setContentsMargins(0, 0, 0, 0)
 		b411.addStretch()
+		b411.addWidget(self.btn4_1)
 		b411.addWidget(btn4_11)
 		b411.addStretch()
 		wid11.setLayout(b411)
+
+		self.checkBox0 = QCheckBox('Automatically scroll simultaneously', self)
+		self.checkBox0.setChecked(True)
+		self.checkBox0.clicked.connect(self.auto_scroll)
 
 		main_h_box = QVBoxLayout()
 		main_h_box.addWidget(wid0)
 		main_h_box.addWidget(wid1)
 		main_h_box.addWidget(wid11)
+		main_h_box.addWidget(self.checkBox0)
 		main_h_box.addStretch()
 		self.setLayout(main_h_box)
 
@@ -1816,35 +1856,39 @@ class window4(QWidget):  # Customization settings
 			with open(fulldir2, 'a', encoding='utf-8') as f0:
 				f0.write('Note 001||' + fulldir3 + '\n')
 		exsfeeds = codecs.open(fulldir2, 'r', encoding='utf-8').read()
-		self.text_feed.setText(exsfeeds)
+		pathslist = exsfeeds.split('\n')
+		while '' in pathslist:
+			pathslist.remove('')
+		self.text_feed.clear()
+		self.text_feed.addItems(pathslist)
 
-	def center(self):  # 设置窗口居中
-		qr = self.frameGeometry()
-		cp = self.screen().availableGeometry().center()
-		qr.moveCenter(cp)
-		self.move(qr.topLeft())
+	def item_click(self):
+		selected_items = self.text_feed.selectedItems()  # 获取已选择的项
+		if len(selected_items) > 0:
+			self.btn4_1.setVisible(True)
+		else:
+			self.btn4_1.setVisible(False)
 
-	def keyPressEvent(self, e):  # 当页面显示的时候，按下esc键可关闭窗口
-		if e.key() == Qt.Key.Key_Escape.value:
-			self.close()
-
-	def cancel(self):  # 设置取消键的功能
-		self.close()
-
-	def activate(self):  # 设置窗口显示
-		self.show()
-		home_dir = str(Path.home())
-		tarname1 = "WatermelonAppPath"
-		fulldir1 = os.path.join(home_dir, tarname1)
-		if not os.path.exists(fulldir1):
-			os.mkdir(fulldir1)
-		tarname2 = "DoNotDelete.txt"
-		fulldir2 = os.path.join(fulldir1, tarname2)
-		if not os.path.exists(fulldir2):
-			with open(fulldir2, 'a', encoding='utf-8') as f0:
-				f0.write('')
-		exsfeeds = codecs.open(fulldir2, 'r', encoding='utf-8').read()
-		self.text_feed.setText(exsfeeds)
+	def delete_item(self):
+		selected_items = self.text_feed.selectedItems()
+		if len(selected_items) > 0:
+			index = 0
+			text = ''
+			for item in selected_items:
+				index = self.text_feed.row(item)  # 获取选中项的索引
+				text = item.text()
+			output_list = []
+			for i in range(self.text_feed.count()):
+				output_list.append(self.text_feed.item(i).text())
+			while '' in output_list:
+				output_list.remove('')
+			if index != 0 and text != '' and 'Note 001' not in text:
+				deletelist = []
+				deletelist.append(output_list[index])
+				output_list.remove(deletelist[0])
+				#set show
+				self.text_feed.clear()
+				self.text_feed.addItems(output_list)
 
 	def SaveFeed(self):
 		w3.widget0.currentIndexChanged.disconnect(w3.index_change)
@@ -1864,7 +1908,10 @@ class window4(QWidget):  # Customization settings
 		tarname4 = "Current.txt"
 		fulldir4 = os.path.join(fulldir1, tarname4)
 
-		part1 = self.text_feed.toPlainText()
+		output_list = []
+		for i in range(self.text_feed.count()):
+			output_list.append(self.text_feed.item(i).text())
+		part1 = '\n'.join(output_list) + '\n'
 		if part1 != '':
 			pathslist = part1.split('\n')
 			while '' in pathslist:
@@ -1895,6 +1942,60 @@ class window4(QWidget):  # Customization settings
 			endhtmlbio = w3.md2html(endbio)
 			w3.topright.setHtml(endhtmlbio)
 			w3.bottom.textChanged.connect(w3.text_change)
+		if part1 == '':
+			w3.widget0.currentIndexChanged.connect(w3.index_change)
+			w3.widget0.setCurrentIndex(0)
+			with open(fulldir4, 'w', encoding='utf-8') as f0:
+				f0.write('0')
+			targetpath = fulldir3
+			previewtext = codecs.open(targetpath, 'r', encoding='utf-8').read()
+			w3.bottom.setText(previewtext)
+			endhtml = w3.md2html(previewtext)
+			w3.topleft.setHtml(endhtml)
+			endbio = w3.addb2(previewtext.replace('*', ''))
+			endhtmlbio = w3.md2html(endbio)
+			w3.topright.setHtml(endhtmlbio)
+			w3.bottom.textChanged.connect(w3.text_change)
+		self.close()
+
+	def auto_scroll(self):
+		w3.scrollbar = w3.bottom.verticalScrollBar()
+		if self.checkBox0.isChecked():
+			w3.scrollbar.valueChanged.connect(w3.scrollchanged)
+		if not self.checkBox0.isChecked():
+			w3.scrollbar.valueChanged.disconnect(w3.scrollchanged)
+
+	def activate(self):  # 设置窗口显示
+		self.show()
+		self.btn4_1.setVisible(False)
+		home_dir = str(Path.home())
+		tarname1 = "WatermelonAppPath"
+		fulldir1 = os.path.join(home_dir, tarname1)
+		if not os.path.exists(fulldir1):
+			os.mkdir(fulldir1)
+		tarname2 = "DoNotDelete.txt"
+		fulldir2 = os.path.join(fulldir1, tarname2)
+		if not os.path.exists(fulldir2):
+			with open(fulldir2, 'a', encoding='utf-8') as f0:
+				f0.write('')
+		exsfeeds = codecs.open(fulldir2, 'r', encoding='utf-8').read()
+		pathslist = exsfeeds.split('\n')
+		while '' in pathslist:
+			pathslist.remove('')
+		self.text_feed.clear()
+		self.text_feed.addItems(pathslist)
+
+	def center(self):  # 设置窗口居中
+		qr = self.frameGeometry()
+		cp = self.screen().availableGeometry().center()
+		qr.moveCenter(cp)
+		self.move(qr.topLeft())
+
+	def keyPressEvent(self, e):  # 当页面显示的时候，按下esc键可关闭窗口
+		if e.key() == Qt.Key.Key_Escape.value:
+			self.close()
+
+	def cancel(self):  # 设置取消键的功能
 		self.close()
 
 
@@ -1955,6 +2056,15 @@ style_sheet_ori = '''
 		color: #000000;
 		font: 14pt Times New Roman;
 }
+	QListWidget{
+        border: 1px solid grey;  
+        border-radius:4px;
+        padding: 1px 5px 1px 3px; 
+        background-clip: border;
+        background-color: #F3F2EE;
+        color: #000000;
+        font: 14pt Times New Roman;
+}
 '''
 
 
@@ -1975,5 +2085,6 @@ if __name__ == '__main__':
 	action6.triggered.connect(w4.activate)
 	action7.triggered.connect(w3.open_file_menu)
 	btna4.triggered.connect(w3.pin_a_tab)
+	w3.btn0_1.clicked.connect(w4.activate)
 	app.setStyleSheet(style_sheet_ori)
 	app.exec()
