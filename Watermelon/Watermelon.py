@@ -132,7 +132,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg2.setLayout(blay2)
 
 		widg3 = QWidget()
-		lbl1 = QLabel('Version 2.0.2', self)
+		lbl1 = QLabel('Version 2.0.3', self)
 		blay3 = QHBoxLayout()
 		blay3.setContentsMargins(0, 0, 0, 0)
 		blay3.addStretch()
@@ -595,7 +595,7 @@ class window_update(QWidget):  # 增加更新页面（Check for Updates）
 
 	def initUI(self):  # 说明页面内信息
 
-		self.lbl = QLabel('Current Version: v2.0.2', self)
+		self.lbl = QLabel('Current Version: v2.0.3', self)
 		self.lbl.move(30, 45)
 
 		lbl0 = QLabel('Download Update:', self)
@@ -711,11 +711,13 @@ class window3(QWidget):  # 主窗口
 		self.topleft.setMaximumHeight(SCREEN_HEIGHT - 200)
 		self.topleft.setReadOnly(True)
 		#self.topleft.setDisabled(True)
+		self.topleftshow = 1
 
 		self.topright = QTextEdit(self)
 		self.topright.setMaximumHeight(SCREEN_HEIGHT - 200)
 		self.topright.setReadOnly(True)
 		#self.topright.setDisabled(True)
+		self.toprightshow = 1
 
 		self.bottom = QTextEdit(self)
 		self.bottom.setFixedWidth(1235)
@@ -723,15 +725,17 @@ class window3(QWidget):  # 主窗口
 		self.scrollbar = self.bottom.verticalScrollBar()
 		self.scrollbar.valueChanged.connect(self.scrollchanged)
 
-		splitter1 = QSplitter(Qt.Orientation.Horizontal)
-		splitter1.addWidget(self.topleft)
-		splitter1.addWidget(self.topright)
+		self.splitter1 = QSplitter(Qt.Orientation.Horizontal)
+		self.splitter1.addWidget(self.topleft)
+		self.splitter1.addWidget(self.topright)
+		self.splitter1.splitterMoved.connect(self.splitter1_move)
 
-		splitter2 = QSplitter(Qt.Orientation.Vertical)
-		splitter2.addWidget(splitter1)
-		splitter2.addWidget(self.bottom)
-		splitter2.setSizes([SCREEN_HEIGHT - 200, 100])
-		splitter2.setStyleSheet('''
+		self.splitter2 = QSplitter(Qt.Orientation.Vertical)
+		self.splitter2.addWidget(self.splitter1)
+		self.splitter2.addWidget(self.bottom)
+		self.splitter2.setSizes([SCREEN_HEIGHT - 200, 100])
+		self.splitter2.splitterMoved.connect(self.splitter2_move)
+		self.splitter2.setStyleSheet('''
 					QSplitter::handle{
 					border: transparent;
 					background-color: transparent;
@@ -740,7 +744,7 @@ class window3(QWidget):  # 主窗口
 					border-radius: 4px;
 					}
 					''')
-		splitter1.setStyleSheet('''
+		self.splitter1.setStyleSheet('''
 					QSplitter::handle{
 					border: transparent;
 					background-color: transparent;
@@ -753,7 +757,7 @@ class window3(QWidget):  # 主窗口
 		hbox = QHBoxLayout(self)
 		hbox.setContentsMargins(0, 0, 0, 0)
 		hbox.addStretch()
-		hbox.addWidget(splitter2)
+		hbox.addWidget(self.splitter2)
 		hbox.addStretch()
 		self.qw0.setLayout(hbox)
 		self.qw0.setFixedHeight(SCREEN_HEIGHT - 118)
@@ -998,6 +1002,26 @@ The window will float at top all the time as you focus on typing. If you want to
 		self.btn_00.raise_()
 		self.btn0_1.raise_()
 
+	def splitter1_move(self):
+		if self.topleft.width() == 0 or self.topleft.height() == 0:
+			self.topleftshow = 0
+		if self.topleft.width() != 0 and self.topleft.height() != 0:
+			self.topleftshow = 1
+		if self.topright.width() == 0 or self.topright.height() == 0:
+			self.toprightshow = 0
+		if self.topright.width() != 0 and self.topright.height() != 0:
+			self.toprightshow = 1
+
+	def splitter2_move(self):
+		if self.topleft.width() == 0 or self.topleft.height() == 0:
+			self.topleftshow = 0
+		if self.topleft.width() != 0 and self.topleft.height() != 0:
+			self.topleftshow = 1
+		if self.topright.width() == 0 or self.topright.height() == 0:
+			self.toprightshow = 0
+		if self.topright.width() != 0 and self.topright.height() != 0:
+			self.toprightshow = 1
+
 	def text_change(self):
 		if self.bottom.toPlainText() != '':
 			# set text
@@ -1049,12 +1073,14 @@ The window will float at top all the time as you focus on typing. If you want to
 					f0.write(self.bottom.toPlainText())
 			previewtext = codecs.open(targetpath, 'r', encoding='utf-8').read()
 			# set top left
-			endhtml = self.md2html(previewtext)
-			self.topleft.setHtml(endhtml)
+			if self.topleftshow == 1:
+				endhtml = self.md2html(previewtext)
+				self.topleft.setHtml(endhtml)
 			# set top right
-			endbio = self.addb2(previewtext.replace('*', ''))
-			endhtmlbio = self.md2html(endbio)
-			self.topright.setHtml(endhtmlbio)
+			if self.toprightshow == 1:
+				endbio = self.addb2(previewtext.replace('*', ''))
+				endhtmlbio = self.md2html(endbio)
+				self.topright.setHtml(endhtmlbio)
 
 			self.scrollchanged()
 
