@@ -27,6 +27,7 @@ import os
 from pathlib import Path
 import markdown2
 from datetime import datetime
+import matplotlib.font_manager
 
 app = QApplication(sys.argv)
 app.setQuitOnLastWindowClosed(False)
@@ -132,7 +133,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg2.setLayout(blay2)
 
 		widg3 = QWidget()
-		lbl1 = QLabel('Version 2.0.3', self)
+		lbl1 = QLabel('Version 2.0.4', self)
 		blay3 = QHBoxLayout()
 		blay3.setContentsMargins(0, 0, 0, 0)
 		blay3.addStretch()
@@ -595,7 +596,7 @@ class window_update(QWidget):  # 增加更新页面（Check for Updates）
 
 	def initUI(self):  # 说明页面内信息
 
-		self.lbl = QLabel('Current Version: v2.0.3', self)
+		self.lbl = QLabel('Current Version: v2.0.4', self)
 		self.lbl.move(30, 45)
 
 		lbl0 = QLabel('Download Update:', self)
@@ -1860,6 +1861,23 @@ class window4(QWidget):  # Customization settings
 		self.checkBox0.setChecked(True)
 		self.checkBox0.clicked.connect(self.auto_scroll)
 
+		self.widget1 = QComboBox(self)
+		self.widget1.addItems(['Default font'])
+		font_manager = matplotlib.font_manager.FontManager()
+		font_list = [font.name for font in font_manager.ttflist]
+		unique_font_names = list(set([font.split(",")[0] for font in font_list if not font.startswith(".")]))
+		unique_font_names.sort()
+		self.widget1.addItems(unique_font_names)
+		self.widget1.setCurrentIndex(0)
+		self.widget1.currentIndexChanged.connect(self.font_change)
+
+		wid3 = QWidget()
+		b43 = QHBoxLayout()
+		b43.setContentsMargins(0, 0, 0, 0)
+		b43.addWidget(self.checkBox0)
+		b43.addWidget(self.widget1)
+		wid3.setLayout(b43)
+
 		lbl1 = QLabel("Font size: ", self)
 		self.lbl2 = QLabel("14 ", self)
 		sld = QSlider(Qt.Orientation.Horizontal, self)
@@ -1878,7 +1896,7 @@ class window4(QWidget):  # Customization settings
 		main_h_box.addWidget(wid0)
 		main_h_box.addWidget(wid1)
 		main_h_box.addWidget(wid11)
-		main_h_box.addWidget(self.checkBox0)
+		main_h_box.addWidget(wid3)
 		main_h_box.addWidget(wid2)
 		main_h_box.addStretch()
 		self.setLayout(main_h_box)
@@ -2011,11 +2029,31 @@ class window4(QWidget):  # Customization settings
 	def value_change(self, value):
 		self.lbl2.setText(str(value))
 		self.lbl2.adjustSize()
+		targetfont = self.widget1.currentText()
+		if targetfont == 'Default font':
+			targetfont = 'Times New Roman'
 		w3.setStyleSheet(f'''
 			QTextEdit{{
-				font: {value}pt Times New Roman;
+				font: {value}pt {targetfont};
 			}}
 		''')
+
+	def font_change(self, i):
+		if i == 0:
+			targetsize = int(self.lbl2.text())
+			w3.setStyleSheet(f'''
+				QTextEdit{{
+					font: {targetsize}pt Times New Roman;
+				}}
+			''')
+		if i != 0:
+			targetsize = int(self.lbl2.text())
+			targetfont = self.widget1.itemText(i)
+			w3.setStyleSheet(f'''
+				QTextEdit{{
+					font: {targetsize}pt {targetfont};
+				}}
+			''')
 
 	def activate(self):  # 设置窗口显示
 		self.show()
