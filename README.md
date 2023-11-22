@@ -8,6 +8,8 @@ Copy your text, click menu, paste it in your markdown editor, and enjoy fast rea
 
 **Watermelon Typewriter**: The left top is realtime Markdown, the toplight is bionic reading Markdown. You can change the size by drag and drop.
 
+![h1tehOF](https://i.imgur.com/h1tehOF.png)
+
 ![P6woKPD](https://i.imgur.com/P6woKPD.jpg)
 
 **Clipboard Bionic Reading**: The bold version makes you read faster no matter it is English or Chinese!
