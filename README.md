@@ -1,15 +1,24 @@
 # 🍉Watermelon: A Markdown-based Transferring Tool for Bionic Reading
 
+![8D4PiSF](https://i.imgur.com/8D4PiSF.png)
+
 Copy your text, click menu, paste it in your markdown editor, and enjoy fast reading!
 
 ## Main windows
-The bold version makes you read faster no matter it is English or Chinese!
+
+**Watermelon Typewriter**: The left top is realtime Markdown, the toplight is bionic reading Markdown. You can change the size by drag and drop.
+
+![P6woKPD](https://i.imgur.com/P6woKPD.jpg)
+
+**Clipboard Bionic Reading**: The bold version makes you read faster no matter it is English or Chinese!
 
 ![main1](https://github.com/Ryan-the-hito/Watermelon/raw/main/img/main1.png)
 
 Toggle on or off with one click!
 
 ![main2](https://github.com/Ryan-the-hito/Watermelon/raw/main/img/main2.png)
+
+**Markdown File Bionic Reading**: you can also make a Markdown file in bionic reading format from the menu bar option.
 
 ## Improvements and version history
 ### Improvements
