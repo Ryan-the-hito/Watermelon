@@ -1,16 +1,16 @@
-# 🍉Watermelon: A Markdown-based Transferring Tool for Bionic Reading
+# 🍉Watermelon: A Markdown-based Tool for Bionic Reading
 
 ![8D4PiSF](https://i.imgur.com/8D4PiSF.png)
 
 Copy your text, click menu, paste it in your markdown editor, and enjoy fast reading!
 
-## Main windows
+## 解决问题
+
+Add bionic reading to day-to-day typing and reading experience.
+
+## 功能亮点
 
 **Watermelon Typewriter**: The left top is realtime Markdown, the toplight is bionic reading Markdown. You can change the size by drag and drop.
-
-![h1tehOF](https://i.imgur.com/h1tehOF.png)
-
-![P6woKPD](https://i.imgur.com/P6woKPD.jpg)
 
 **Clipboard Bionic Reading**: The bold version makes you read faster no matter it is English or Chinese!
 
@@ -22,18 +22,44 @@ Toggle on or off with one click!
 
 **Markdown File Bionic Reading**: you can also make a Markdown file in bionic reading format from the menu bar option.
 
-## Improvements and version history
-### Improvements
-### Version history
-#### v1.1.2 (Jun 7 2022)
-- Now the app hides dock icon by default.
+## 界面一览
 
-#### v1.1.1 (May 25 2022)
-- Bug fix: when there is 'ing' after 'ing', the bolding would get wrong.
+### Watermelon Typewriter
 
-#### v1.1.0 (May 25 2022)
-- Added batter splitting function for 'ing' words.
+![h1tehOF](https://i.imgur.com/h1tehOF.png)
 
-#### v1.0.0 (May 24 2022)
+![P6woKPD](https://i.imgur.com/P6woKPD.jpg)
 
-- The first version.
+## 环境要求
+
+- MacOS（测试环境为 MacOS 13.6.1）
+- M 芯片
+- 网络环境自理
+
+## 类型价目
+
+Free.
+
+## 下载安装
+
+## 使用说明
+
+## 注意事项
+
+## 证书信息
+
+GPL-3.0 license
+
+## 特别致谢
+
+1. [Qt](https://github.com/qt)：本软件遵循 Qt 的开源协议。
+
+## 支持作者
+
+[Buy Me a Cup of Coffee](https://www.buymeacoffee.com/ryanthehito)
+
+<p align="center">
+  <img src="https://i.imgur.com/OHHJD4y.png" width=240 />
+  <img src="https://i.imgur.com/6XiKMAK.png" width=240 />
+</p>
+
