@@ -46,6 +46,10 @@ Free.
 
 ## 注意事项
 
+## Q&A
+
+如果遇到任何特殊情况，请访问 **[Q&A](https://github.com/Ryan-the-hito/Q-A)❓** 查看是否有现成的解决方案，或进一步联系我。
+
 ## 证书信息
 
 GPL-3.0 license
