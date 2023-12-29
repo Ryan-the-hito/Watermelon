@@ -3,13 +3,13 @@
 
 block_cipher = None
 
-__version__ = '2.0.4'
+__version__ = '2.0.6'
 
 a = Analysis(
     ['Watermelon.py'],
     pathex=['/Users/ryanshenefield/Downloads/Watermelon.py'],
     binaries=[],
-    datas=[('wtmenu.icns', '.'), ('wtmdsk.icns', '.'), ('wtmenu.png', '.'), ('wechat50.png', '.'), ('wechat20.png', '.'), ('wechat10.png', '.'), ('wechat5.png', '.'), ('alipay50.png', '.'), ('alipay20.png', '.'), ('alipay10.png', '.'), ('alipay5.png', '.'), ('bottom7.png', '.'), ('middle6.png', '.'), ('middle2.png', '.'), ('set2.png', '.'), ('/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/jieba', 'jieba')],
+    datas=[('wtmenu.icns', '.'), ('wtmdsk.icns', '.'), ('wtmenu.png', '.'), ('wechat50.png', '.'), ('wechat20.png', '.'), ('wechat10.png', '.'), ('wechat5.png', '.'), ('alipay50.png', '.'), ('alipay20.png', '.'), ('alipay10.png', '.'), ('alipay5.png', '.'), ('bottom7.png', '.'), ('middle6.png', '.'), ('middle2.png', '.'), ('set2.png', '.'), ('/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/jieba', 'jieba'), ('fs.txt', '.')],
     hiddenimports=['subprocess'],
     hookspath=[],
     hooksconfig={},

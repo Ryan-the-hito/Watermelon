@@ -1,10 +1,12 @@
-#!/usr/bin/python
+#!/usr/local/bin/python3.11
 # -*- coding: utf-8 -*-
 # -*- encoding:UTF-8 -*-
 # coding=utf-8
 # coding:utf-8
 
 import codecs
+import time
+
 from PyQt6.QtWidgets import (QWidget, QPushButton, QApplication,
 							 QLabel, QHBoxLayout, QVBoxLayout, QLineEdit,
 							 QSystemTrayIcon, QMenu, QComboBox, QDialog,
@@ -133,7 +135,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg2.setLayout(blay2)
 
 		widg3 = QWidget()
-		lbl1 = QLabel('Version 2.0.4', self)
+		lbl1 = QLabel('Version 2.0.6', self)
 		blay3 = QHBoxLayout()
 		blay3.setContentsMargins(0, 0, 0, 0)
 		blay3.addStretch()
@@ -596,7 +598,7 @@ class window_update(QWidget):  # 增加更新页面（Check for Updates）
 
 	def initUI(self):  # 说明页面内信息
 
-		self.lbl = QLabel('Current Version: v2.0.4', self)
+		self.lbl = QLabel('Current Version: v2.0.6', self)
 		self.lbl.move(30, 45)
 
 		lbl0 = QLabel('Download Update:', self)
@@ -928,16 +930,6 @@ The window will float at top all the time as you focus on typing. If you want to
 		animation.start()
 		self.i += 1
 
-	def mousePressEvent(self, event):
-		if event.button() == Qt.MouseButton.LeftButton:
-			self.dragPosition = event.globalPosition().toPoint() - self.pos()
-
-	def mouseMoveEvent(self, event):
-		if self.dragPosition is None:
-			return
-		if event.buttons() == Qt.MouseButton.LeftButton:
-			self.move(event.globalPosition().toPoint() - self.dragPosition)
-
 	def assigntoall(self):
 		cmd = '''on run
 			tell application "System Events" to set activeApp to "Watermelon"
@@ -957,6 +949,7 @@ The window will float at top all the time as you focus on typing. If you want to
 		SCREEN_HEIGHT = int(self.screen().availableGeometry().height())
 		x_center = 0
 		y_center = 0
+		self.show()
 		if self.i % 2 == 1:  # show
 			btna4.setChecked(True)
 			self.btn_00.setFixedHeight(10)
@@ -967,6 +960,7 @@ The window will float at top all the time as you focus on typing. If you want to
 						border-radius: 4px;
 						padding: 1px;
 						color: #FFFFFF''')
+			self.btn_00.move(160, SCREEN_HEIGHT - 35)
 			self.qw0.setVisible(True)
 			self.qw1.setVisible(True)
 			self.l1.setVisible(True)
@@ -975,7 +969,7 @@ The window will float at top all the time as you focus on typing. If you want to
 			x_center = int(SCREEN_WEIGHT / 2) - 760
 			y_center = 0
 			self.move(int(SCREEN_WEIGHT / 2) - 760, 0 - SCREEN_HEIGHT)
-			self.btn_00.move(160, SCREEN_HEIGHT - 35)
+			self.updatecontent()
 		if self.i % 2 == 0:  # hide
 			btna4.setChecked(False)
 			self.btn_00.setFixedHeight(10)
@@ -986,6 +980,7 @@ The window will float at top all the time as you focus on typing. If you want to
 						border-radius: 4px;
 						padding: 1px;
 						color: #000000''')
+			self.btn_00.move(0, 0)
 			self.qw0.setVisible(False)
 			self.qw1.setVisible(False)
 			self.l1.setVisible(False)
@@ -994,14 +989,55 @@ The window will float at top all the time as you focus on typing. If you want to
 			x_center = int(SCREEN_WEIGHT / 2) - 50
 			y_center = 10
 			self.move(int(SCREEN_WEIGHT / 2) - 50, SCREEN_HEIGHT)
-			self.btn_00.move(0, 0)
 
 		self.move_window(x_center, y_center)
-		self.show()
 		self.qw0.raise_()
 		self.qw1.raise_()
 		self.btn_00.raise_()
 		self.btn0_1.raise_()
+
+	def updatecontent(self):
+		# set text
+		current_index = self.widget0.currentIndex()
+		home_dir = str(Path.home())
+		tarname1 = "WatermelonAppPath"
+		fulldir1 = os.path.join(home_dir, tarname1)
+		tarname2 = "DoNotDelete.txt"
+		fulldir2 = os.path.join(fulldir1, tarname2)
+		tarname4 = "Current.txt"
+		fulldir4 = os.path.join(fulldir1, tarname4)
+
+		with open(fulldir4, 'w', encoding='utf-8') as f0:
+			f0.write(str(current_index))
+
+		paths = codecs.open(fulldir2, 'r', encoding='utf-8').read()
+		pathslist = paths.split('\n')
+		while '' in pathslist:
+			pathslist.remove('')
+		current_path = pathslist[current_index].split('||')[1]
+		try:
+			previewtext = codecs.open(current_path, 'r', encoding='utf-8').read()
+			self.widget0.setCurrentIndex(current_index)
+		except Exception as e:
+			with open(fulldir4, 'w', encoding='utf-8') as f0:
+				f0.write('0')
+			targetpath = pathslist[0].split('||')[1]
+			previewtext = codecs.open(targetpath, 'r', encoding='utf-8').read()
+			currentindex = int(codecs.open(fulldir4, 'r', encoding='utf-8').read())
+			self.widget0.setCurrentIndex(currentindex)
+		self.bottom.setText(previewtext)
+		self.bottom.ensureCursorVisible()  # 游标可用
+		cursor = self.bottom.textCursor()  # 设置游标
+		pos = len(self.bottom.toPlainText())  # 获取文本尾部的位置
+		cursor.setPosition(pos)  # 游标位置设置为尾部
+		self.bottom.setTextCursor(cursor)  # 滚动到游标位置
+		if self.topleftshow == 1:
+			endhtml = self.md2html(previewtext)
+			self.topleft.setHtml(endhtml)
+		if self.toprightshow == 1:
+			endbio = self.addb2(previewtext.replace('*', ''))
+			endhtmlbio = self.md2html(endbio)
+			self.topright.setHtml(endhtmlbio)
 
 	def splitter1_move(self):
 		if self.topleft.width() == 0 or self.topleft.height() == 0:
@@ -1879,11 +1915,18 @@ class window4(QWidget):  # Customization settings
 		wid3.setLayout(b43)
 
 		lbl1 = QLabel("Font size: ", self)
-		self.lbl2 = QLabel("14 ", self)
 		sld = QSlider(Qt.Orientation.Horizontal, self)
 		sld.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 		sld.setRange(14, 50)
+		dfontsize = int(codecs.open(BasePath + 'fs.txt', 'r', encoding='utf-8').read())
+		sld.setValue(dfontsize)
+		w3.setStyleSheet(f'''
+				QTextEdit{{
+					font: {dfontsize}pt Times New Roman;
+				}}
+			''')
 		sld.valueChanged[int].connect(self.value_change)
+		self.lbl2 = QLabel(str(dfontsize) + " ", self)
 		wid2 = QWidget()
 		b42 = QHBoxLayout()
 		b42.setContentsMargins(0, 0, 0, 0)
@@ -2037,6 +2080,8 @@ class window4(QWidget):  # Customization settings
 				font: {value}pt {targetfont};
 			}}
 		''')
+		with open(BasePath + 'fs.txt', 'w', encoding='utf-8') as f0:
+			f0.write(str(value))
 
 	def font_change(self, i):
 		if i == 0:
