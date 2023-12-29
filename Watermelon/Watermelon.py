@@ -135,7 +135,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg2.setLayout(blay2)
 
 		widg3 = QWidget()
-		lbl1 = QLabel('Version 2.0.6', self)
+		lbl1 = QLabel('Version 2.0.7', self)
 		blay3 = QHBoxLayout()
 		blay3.setContentsMargins(0, 0, 0, 0)
 		blay3.addStretch()
@@ -598,7 +598,7 @@ class window_update(QWidget):  # 增加更新页面（Check for Updates）
 
 	def initUI(self):  # 说明页面内信息
 
-		self.lbl = QLabel('Current Version: v2.0.6', self)
+		self.lbl = QLabel('Current Version: v2.0.7', self)
 		self.lbl.move(30, 45)
 
 		lbl0 = QLabel('Download Update:', self)
@@ -701,7 +701,7 @@ class window3(QWidget):  # 主窗口
 		self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 		SCREEN_WEIGHT = int(self.screen().availableGeometry().width())
 		SCREEN_HEIGHT = int(self.screen().availableGeometry().height())
-		self.setFixedSize(1520, SCREEN_HEIGHT)
+		self.resize(1520, SCREEN_HEIGHT)
 		self.i = 1
 
 		home_dir = str(Path.home())
@@ -965,7 +965,7 @@ The window will float at top all the time as you focus on typing. If you want to
 			self.qw1.setVisible(True)
 			self.l1.setVisible(True)
 			self.btn0_1.setVisible(True)
-			self.setFixedSize(1520, SCREEN_HEIGHT)
+			self.resize(1520, SCREEN_HEIGHT)
 			x_center = int(SCREEN_WEIGHT / 2) - 760
 			y_center = 0
 			self.move(int(SCREEN_WEIGHT / 2) - 760, 0 - SCREEN_HEIGHT)
@@ -985,7 +985,7 @@ The window will float at top all the time as you focus on typing. If you want to
 			self.qw1.setVisible(False)
 			self.l1.setVisible(False)
 			self.btn0_1.setVisible(False)
-			self.setFixedSize(100, 10)
+			self.resize(100, 10)
 			x_center = int(SCREEN_WEIGHT / 2) - 50
 			y_center = 10
 			self.move(int(SCREEN_WEIGHT / 2) - 50, SCREEN_HEIGHT)
