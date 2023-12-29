@@ -5,13 +5,11 @@
 # coding:utf-8
 
 import codecs
-import time
-
 from PyQt6.QtWidgets import (QWidget, QPushButton, QApplication,
-							 QLabel, QHBoxLayout, QVBoxLayout, QLineEdit,
+							 QLabel, QHBoxLayout, QVBoxLayout,
 							 QSystemTrayIcon, QMenu, QComboBox, QDialog,
-							 QDialogButtonBox, QMenuBar, QFrame, QFileDialog,
-							 QPlainTextEdit, QSplitter, QTextEdit, QListWidget, QCheckBox, QSlider)
+							 QMenuBar, QFileDialog,
+							 QSplitter, QTextEdit, QListWidget, QCheckBox, QSlider)
 from PyQt6.QtCore import Qt, QPropertyAnimation, QRect
 from PyQt6.QtGui import QAction, QIcon, QColor
 import PyQt6.QtGui
@@ -135,7 +133,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg2.setLayout(blay2)
 
 		widg3 = QWidget()
-		lbl1 = QLabel('Version 2.0.7', self)
+		lbl1 = QLabel('Version 2.0.8', self)
 		blay3 = QHBoxLayout()
 		blay3.setContentsMargins(0, 0, 0, 0)
 		blay3.addStretch()
@@ -598,7 +596,7 @@ class window_update(QWidget):  # 增加更新页面（Check for Updates）
 
 	def initUI(self):  # 说明页面内信息
 
-		self.lbl = QLabel('Current Version: v2.0.7', self)
+		self.lbl = QLabel('Current Version: v2.0.8', self)
 		self.lbl.move(30, 45)
 
 		lbl0 = QLabel('Download Update:', self)
@@ -694,7 +692,6 @@ class window3(QWidget):  # 主窗口
 	def __init__(self):
 		super().__init__()
 		self.initUI()
-		self.dragPosition = None
 
 	def initUI(self):
 		self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
@@ -947,6 +944,8 @@ The window will float at top all the time as you focus on typing. If you want to
 	def pin_a_tab(self):
 		SCREEN_WEIGHT = int(self.screen().availableGeometry().width())
 		SCREEN_HEIGHT = int(self.screen().availableGeometry().height())
+		screen_width = app.primaryScreen().geometry().width()
+		screen_height = app.primaryScreen().geometry().height()
 		x_center = 0
 		y_center = 0
 		self.show()
@@ -965,6 +964,8 @@ The window will float at top all the time as you focus on typing. If you want to
 			self.qw1.setVisible(True)
 			self.l1.setVisible(True)
 			self.btn0_1.setVisible(True)
+			self.setMinimumSize(0, 0)
+			self.setMaximumSize(16777215, 16777215)
 			self.resize(1520, SCREEN_HEIGHT)
 			x_center = int(SCREEN_WEIGHT / 2) - 760
 			y_center = 0
@@ -985,7 +986,7 @@ The window will float at top all the time as you focus on typing. If you want to
 			self.qw1.setVisible(False)
 			self.l1.setVisible(False)
 			self.btn0_1.setVisible(False)
-			self.resize(100, 10)
+			self.setFixedSize(100, 10)
 			x_center = int(SCREEN_WEIGHT / 2) - 50
 			y_center = 10
 			self.move(int(SCREEN_WEIGHT / 2) - 50, SCREEN_HEIGHT)
