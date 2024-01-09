@@ -10,8 +10,8 @@ from PyQt6.QtWidgets import (QWidget, QPushButton, QApplication,
 							 QSystemTrayIcon, QMenu, QComboBox, QDialog,
 							 QMenuBar, QFileDialog,
 							 QSplitter, QTextEdit, QListWidget, QCheckBox, QSlider)
-from PyQt6.QtCore import Qt, QPropertyAnimation, QRect
-from PyQt6.QtGui import QAction, QIcon, QColor
+from PyQt6.QtCore import Qt, QPropertyAnimation, QRect, QTimer
+from PyQt6.QtGui import QAction, QIcon, QColor, QFontDatabase, QPixmap
 import PyQt6.QtGui
 import sys
 import webbrowser
@@ -28,6 +28,7 @@ from pathlib import Path
 import markdown2
 from datetime import datetime
 import matplotlib.font_manager
+from PIL import Image, ImageQt
 
 app = QApplication(sys.argv)
 app.setQuitOnLastWindowClosed(False)
@@ -133,7 +134,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg2.setLayout(blay2)
 
 		widg3 = QWidget()
-		lbl1 = QLabel('Version 2.0.8', self)
+		lbl1 = QLabel('Version 2.0.9', self)
 		blay3 = QHBoxLayout()
 		blay3.setContentsMargins(0, 0, 0, 0)
 		blay3.addStretch()
@@ -596,7 +597,7 @@ class window_update(QWidget):  # 增加更新页面（Check for Updates）
 
 	def initUI(self):  # 说明页面内信息
 
-		self.lbl = QLabel('Current Version: v2.0.8', self)
+		self.lbl = QLabel('Current Version: v2.0.9', self)
 		self.lbl.move(30, 45)
 
 		lbl0 = QLabel('Download Update:', self)
@@ -763,10 +764,11 @@ class window3(QWidget):  # 主窗口
 		self.qw0.setFixedHeight(SCREEN_HEIGHT - 118)
 
 		self.l1 = QLabel(self)
-		png = PyQt6.QtGui.QPixmap(
-			BasePath + 'bottom7.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
-		scaled_png = png.scaled(1478, 215, transformMode=Qt.TransformationMode.SmoothTransformation)
-		self.l1.setPixmap(scaled_png)  # 在l1里面，调用setPixmap命令，建立一个图像存放框，并将之前的图像png存放在这个框框里。
+
+		img = Image.open(BasePath + 'bottom7.png')
+		img_smooth_scaled0 = img.resize((1478, 215), Image.LANCZOS)
+		qpixmap0 = QPixmap.fromImage(ImageQt.ImageQt(img_smooth_scaled0))
+		self.l1.setPixmap(qpixmap0)  # 在l1里面，调用setPixmap命令，建立一个图像存放框，并将之前的图像png存放在这个框框里。
 		self.l1.setFixedSize(1478, 215)
 		self.l1.move(0, SCREEN_HEIGHT - 215)
 
@@ -1119,16 +1121,18 @@ The window will float at top all the time as you focus on typing. If you want to
 				endbio = self.addb2(previewtext.replace('*', ''))
 				endhtmlbio = self.md2html(endbio)
 				self.topright.setHtml(endhtmlbio)
-
-			self.scrollchanged()
+			# set position
+			QTimer.singleShot(100, self.scrollchanged)
 
 	def scrollchanged(self):
 		if self.bottom.verticalScrollBar().maximum() != 0:
 			proportion = self.bottom.verticalScrollBar().value() / self.bottom.verticalScrollBar().maximum()
-			tar_pro = int(self.topleft.verticalScrollBar().maximum() * proportion)
-			self.topleft.verticalScrollBar().setValue(tar_pro)
-			tar_pro2 = int(self.topright.verticalScrollBar().maximum() * proportion)
-			self.topright.verticalScrollBar().setValue(tar_pro2)
+			if self.topleftshow == 1:
+				tar_pro = int(self.topleft.verticalScrollBar().maximum() * proportion)
+				self.topleft.verticalScrollBar().setValue(tar_pro)
+			if self.toprightshow == 1:
+				tar_pro2 = int(self.topright.verticalScrollBar().maximum() * proportion)
+				self.topright.verticalScrollBar().setValue(tar_pro2)
 
 	def open_file(self):
 		home_dir = str(Path.home())
@@ -1899,7 +1903,7 @@ class window4(QWidget):  # Customization settings
 		self.checkBox0.clicked.connect(self.auto_scroll)
 
 		self.widget1 = QComboBox(self)
-		self.widget1.addItems(['Default font'])
+		self.widget1.addItems(['Last used', 'Default font'])
 		font_manager = matplotlib.font_manager.FontManager()
 		font_list = [font.name for font in font_manager.ttflist]
 		unique_font_names = list(set([font.split(",")[0] for font in font_list if not font.startswith(".")]))
@@ -1921,9 +1925,13 @@ class window4(QWidget):  # Customization settings
 		sld.setRange(14, 50)
 		dfontsize = int(codecs.open(BasePath + 'fs.txt', 'r', encoding='utf-8').read())
 		sld.setValue(dfontsize)
+		font_family = codecs.open(BasePath + 'lastused.txt', 'r', encoding='utf-8').read()
+		if font_family == '0':
+			font_path = BasePath + "chillduanheisong_widelight.otf"  # 替换为你自己的字体文件路径
+			font_family = self.load_font(font_path)
 		w3.setStyleSheet(f'''
 				QTextEdit{{
-					font: {dfontsize}pt Times New Roman;
+					font: {dfontsize}pt {font_family};
 				}}
 			''')
 		sld.valueChanged[int].connect(self.value_change)
@@ -1966,6 +1974,13 @@ class window4(QWidget):  # Customization settings
 			pathslist.remove('')
 		self.text_feed.clear()
 		self.text_feed.addItems(pathslist)
+
+	def load_font(self, font_path):
+		# 加载本地字体
+		font_id = QFontDatabase.addApplicationFont(font_path)
+		if font_id == -1:
+			raise Exception("Font failed to load! Check the font path.")
+		return QFontDatabase.applicationFontFamilies(font_id)[0]
 
 	def item_click(self):
 		selected_items = self.text_feed.selectedItems()  # 获取已选择的项
@@ -2074,8 +2089,14 @@ class window4(QWidget):  # Customization settings
 		self.lbl2.setText(str(value))
 		self.lbl2.adjustSize()
 		targetfont = self.widget1.currentText()
+		if targetfont == 'Last used':
+			targetfont = codecs.open(BasePath + 'lastused.txt', 'r', encoding='utf-8').read()
+			if targetfont == '0':
+				font_path = BasePath + "chillduanheisong_widelight.otf"  # 替换为你自己的字体文件路径
+				targetfont = self.load_font(font_path)
 		if targetfont == 'Default font':
-			targetfont = 'Times New Roman'
+			font_path = BasePath + "chillduanheisong_widelight.otf"  # 替换为你自己的字体文件路径
+			targetfont = self.load_font(font_path)
 		w3.setStyleSheet(f'''
 			QTextEdit{{
 				font: {value}pt {targetfont};
@@ -2087,12 +2108,27 @@ class window4(QWidget):  # Customization settings
 	def font_change(self, i):
 		if i == 0:
 			targetsize = int(self.lbl2.text())
+			targetfont = codecs.open(BasePath + 'lastused.txt', 'r', encoding='utf-8').read()
+			if targetfont == '0':
+				font_path = BasePath + "chillduanheisong_widelight.otf"  # 替换为你自己的字体文件路径
+				targetfont = self.load_font(font_path)
 			w3.setStyleSheet(f'''
 				QTextEdit{{
-					font: {targetsize}pt Times New Roman;
+					font: {targetsize}pt {targetfont};
 				}}
 			''')
-		if i != 0:
+		if i == 1:
+			targetsize = int(self.lbl2.text())
+			font_path = BasePath + "chillduanheisong_widelight.otf"  # 替换为你自己的字体文件路径
+			targetfont = self.load_font(font_path)
+			w3.setStyleSheet(f'''
+				QTextEdit{{
+					font: {targetsize}pt {targetfont};
+				}}
+			''')
+			with open(BasePath + 'lastused.txt', 'w', encoding='utf-8') as f0:
+				f0.write('0')
+		if i != 0 and i != 1:
 			targetsize = int(self.lbl2.text())
 			targetfont = self.widget1.itemText(i)
 			w3.setStyleSheet(f'''
@@ -2100,6 +2136,8 @@ class window4(QWidget):  # Customization settings
 					font: {targetsize}pt {targetfont};
 				}}
 			''')
+			with open(BasePath + 'lastused.txt', 'w', encoding='utf-8') as f0:
+				f0.write(targetfont)
 
 	def activate(self):  # 设置窗口显示
 		self.show()
