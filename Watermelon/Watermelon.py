@@ -134,7 +134,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg2.setLayout(blay2)
 
 		widg3 = QWidget()
-		lbl1 = QLabel('Version 2.0.9', self)
+		lbl1 = QLabel('Version 2.1.0', self)
 		blay3 = QHBoxLayout()
 		blay3.setContentsMargins(0, 0, 0, 0)
 		blay3.addStretch()
@@ -597,7 +597,7 @@ class window_update(QWidget):  # 增加更新页面（Check for Updates）
 
 	def initUI(self):  # 说明页面内信息
 
-		self.lbl = QLabel('Current Version: v2.0.9', self)
+		self.lbl = QLabel('Current Version: v2.1.0', self)
 		self.lbl.move(30, 45)
 
 		lbl0 = QLabel('Download Update:', self)
@@ -725,6 +725,7 @@ class window3(QWidget):  # 主窗口
 		self.bottom.textChanged.connect(self.text_change)
 		self.scrollbar = self.bottom.verticalScrollBar()
 		self.scrollbar.valueChanged.connect(self.scrollchanged)
+		self.bottom.cursorPositionChanged.connect(self.cursorchanged)
 
 		self.splitter1 = QSplitter(Qt.Orientation.Horizontal)
 		self.splitter1.addWidget(self.topleft)
@@ -1028,10 +1029,10 @@ The window will float at top all the time as you focus on typing. If you want to
 			previewtext = codecs.open(targetpath, 'r', encoding='utf-8').read()
 			currentindex = int(codecs.open(fulldir4, 'r', encoding='utf-8').read())
 			self.widget0.setCurrentIndex(currentindex)
+		pos = int(codecs.open(BasePath + 'text_position.txt', 'r', encoding='utf-8').read())
 		self.bottom.setText(previewtext)
 		self.bottom.ensureCursorVisible()  # 游标可用
 		cursor = self.bottom.textCursor()  # 设置游标
-		pos = len(self.bottom.toPlainText())  # 获取文本尾部的位置
 		cursor.setPosition(pos)  # 游标位置设置为尾部
 		self.bottom.setTextCursor(cursor)  # 滚动到游标位置
 		if self.topleftshow == 1:
@@ -1133,6 +1134,17 @@ The window will float at top all the time as you focus on typing. If you want to
 			if self.toprightshow == 1:
 				tar_pro2 = int(self.topright.verticalScrollBar().maximum() * proportion)
 				self.topright.verticalScrollBar().setValue(tar_pro2)
+
+	def cursorchanged(self):
+		self.bottom.ensureCursorVisible()  # 游标可用
+		cursor = self.bottom.textCursor()  # 设置游标
+		position = cursor.position()
+		fullcontent = self.bottom.toPlainText()
+		list_fullcontent = list(fullcontent)
+		remove_list = list_fullcontent[:position]
+		proportion = len(remove_list)
+		with open(BasePath + 'text_position.txt', 'w', encoding='utf-8') as f0:
+				f0.write(str(proportion))
 
 	def open_file(self):
 		home_dir = str(Path.home())
