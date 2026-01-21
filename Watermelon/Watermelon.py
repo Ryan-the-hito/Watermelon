@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (QWidget, QPushButton, QApplication,
 							 QMenuBar, QFileDialog,
 							 QSplitter, QTextEdit, QListWidget, QCheckBox, QSlider)
 from PyQt6.QtCore import Qt, QPropertyAnimation, QRect, QTimer
-from PyQt6.QtGui import QAction, QIcon, QColor, QFontDatabase, QPixmap
+from PyQt6.QtGui import QAction, QIcon, QColor, QFontDatabase, QPixmap, QCursor, QGuiApplication
 import PyQt6.QtGui
 import sys
 import webbrowser
@@ -134,7 +134,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg2.setLayout(blay2)
 
 		widg3 = QWidget()
-		lbl1 = QLabel('Version 2.1.0', self)
+		lbl1 = QLabel('Version 2.1.1', self)
 		blay3 = QHBoxLayout()
 		blay3.setContentsMargins(0, 0, 0, 0)
 		blay3.addStretch()
@@ -597,7 +597,7 @@ class window_update(QWidget):  # 增加更新页面（Check for Updates）
 
 	def initUI(self):  # 说明页面内信息
 
-		self.lbl = QLabel('Current Version: v2.1.0', self)
+		self.lbl = QLabel('Current Version: v2.1.1', self)
 		self.lbl.move(30, 45)
 
 		lbl0 = QLabel('Download Update:', self)
@@ -692,6 +692,8 @@ class window_update(QWidget):  # 增加更新页面（Check for Updates）
 class window3(QWidget):  # 主窗口
 	def __init__(self):
 		super().__init__()
+		self._screen_signals_connected = False
+		self._tracked_screen = None
 		self.initUI()
 
 	def initUI(self):
@@ -914,6 +916,109 @@ The window will float at top all the time as you focus on typing. If you want to
 		if w2.lbl2.text() != 'No Intrenet' and 'ready' in w2.lbl2.text():
 			w2.show()
 
+	def showEvent(self, event):
+		super().showEvent(event)
+		self._connect_screen_signals()
+
+	def _connect_screen_signals(self):
+		if self._screen_signals_connected:
+			return
+		self._screen_signals_connected = True
+		window_handle = self.windowHandle()
+		if window_handle:
+			window_handle.screenChanged.connect(self._on_window_screen_changed)
+			self._attach_screen_geometry_signals(window_handle.screen())
+		app_obj = QGuiApplication.instance()
+		if app_obj:
+			app_obj.screenAdded.connect(self._on_screens_changed)
+			app_obj.screenRemoved.connect(self._on_screens_changed)
+			app_obj.primaryScreenChanged.connect(self._on_primary_screen_changed)
+
+	def _attach_screen_geometry_signals(self, screen):
+		if not screen or screen == self._tracked_screen:
+			return
+		if self._tracked_screen:
+			try:
+				self._tracked_screen.availableGeometryChanged.disconnect(self._on_screen_geometry_changed)
+			except Exception:
+				pass
+			try:
+				self._tracked_screen.geometryChanged.disconnect(self._on_screen_geometry_changed)
+			except Exception:
+				pass
+		self._tracked_screen = screen
+		screen.availableGeometryChanged.connect(self._on_screen_geometry_changed)
+		screen.geometryChanged.connect(self._on_screen_geometry_changed)
+
+	def _on_window_screen_changed(self, screen):
+		self._attach_screen_geometry_signals(screen)
+		if screen:
+			self._apply_screen_geometry(screen.availableGeometry())
+
+	def _on_primary_screen_changed(self, screen):
+		window_handle = self.windowHandle()
+		if window_handle and window_handle.screen():
+			return
+		if screen:
+			self._apply_screen_geometry(screen.availableGeometry())
+
+	def _on_screens_changed(self, _screen):
+		window_handle = self.windowHandle()
+		if window_handle and window_handle.screen():
+			self._attach_screen_geometry_signals(window_handle.screen())
+			self._apply_screen_geometry(window_handle.screen().availableGeometry())
+
+	def _on_screen_geometry_changed(self, _rect):
+		window_handle = self.windowHandle()
+		if window_handle and window_handle.screen():
+			self._apply_screen_geometry(window_handle.screen().availableGeometry())
+
+	def _apply_screen_geometry(self, screen_geom):
+		screen_width = int(screen_geom.width())
+		screen_height = int(screen_geom.height())
+		screen_x = int(screen_geom.x())
+		screen_y = int(screen_geom.y())
+		if self.qw0.isVisible():
+			self.setMinimumSize(0, 0)
+			self.setMaximumSize(16777215, 16777215)
+			self.resize(1520, screen_height)
+			self._adjust_components_for_screen(screen_height)
+			x_center = screen_x + int(screen_width / 2) - 760
+			self.move(x_center, screen_y)
+			return
+		self.setFixedSize(100, 10)
+		x_center = screen_x + int(screen_width / 2) - 50
+		self.move(x_center, screen_y)
+
+	def _current_screen_geometry(self):
+		"""获取当前鼠标所在屏幕的几何信息，用于多显示器支持"""
+		screen = QGuiApplication.screenAt(QCursor.pos())
+		if screen:
+			return screen.availableGeometry()
+		window_handle = self.windowHandle()
+		if window_handle and window_handle.screen():
+			return window_handle.screen().availableGeometry()
+		if self.screen():
+			return self.screen().availableGeometry()
+		primary = QGuiApplication.primaryScreen()
+		return primary.availableGeometry() if primary else QRect(0, 0, 1440, 900)
+
+	def _adjust_components_for_screen(self, screen_height):
+		"""根据屏幕高度调整内部组件的尺寸和位置"""
+		# 调整顶部文本编辑器的最大高度
+		self.topleft.setMaximumHeight(screen_height - 200)
+		self.topright.setMaximumHeight(screen_height - 200)
+		# 调整主内容区域的高度
+		self.qw0.setFixedHeight(screen_height - 118)
+		# 调整分割器的尺寸
+		self.splitter2.setSizes([screen_height - 200, 100])
+		# 调整底部图片的位置
+		self.l1.move(0, screen_height - 215)
+		# 调整蓝色按钮的位置
+		self.btn_00.move(160, screen_height - 35)
+		# 调整设置按钮的位置
+		self.btn0_1.move(35, screen_height - 185)
+
 	def move_window(self, width, height):
 		animation = QPropertyAnimation(self, b"geometry", self)
 		animation.setDuration(250)
@@ -945,10 +1050,12 @@ The window will float at top all the time as you focus on typing. If you want to
 			pass
 
 	def pin_a_tab(self):
-		SCREEN_WEIGHT = int(self.screen().availableGeometry().width())
-		SCREEN_HEIGHT = int(self.screen().availableGeometry().height())
-		screen_width = app.primaryScreen().geometry().width()
-		screen_height = app.primaryScreen().geometry().height()
+		# 使用 _current_screen_geometry 获取当前鼠标所在屏幕的尺寸
+		screen_geom = self._current_screen_geometry()
+		SCREEN_WEIGHT = int(screen_geom.width())
+		SCREEN_HEIGHT = int(screen_geom.height())
+		screen_x = screen_geom.x()  # 屏幕左上角的x坐标（多显示器时重要）
+		screen_y = screen_geom.y()  # 屏幕左上角的y坐标
 		x_center = 0
 		y_center = 0
 		self.show()
@@ -970,9 +1077,11 @@ The window will float at top all the time as you focus on typing. If you want to
 			self.setMinimumSize(0, 0)
 			self.setMaximumSize(16777215, 16777215)
 			self.resize(1520, SCREEN_HEIGHT)
-			x_center = int(SCREEN_WEIGHT / 2) - 760
-			y_center = 0
-			self.move(int(SCREEN_WEIGHT / 2) - 760, 0 - SCREEN_HEIGHT)
+			# 调整内部组件以适应新的屏幕高度
+			self._adjust_components_for_screen(SCREEN_HEIGHT)
+			x_center = screen_x + int(SCREEN_WEIGHT / 2) - 760
+			y_center = screen_y
+			self.move(screen_x + int(SCREEN_WEIGHT / 2) - 760, screen_y - SCREEN_HEIGHT)
 			self.updatecontent()
 		if self.i % 2 == 0:  # hide
 			btna4.setChecked(False)
@@ -990,9 +1099,10 @@ The window will float at top all the time as you focus on typing. If you want to
 			self.l1.setVisible(False)
 			self.btn0_1.setVisible(False)
 			self.setFixedSize(100, 10)
-			x_center = int(SCREEN_WEIGHT / 2) - 50
-			y_center = 10
-			self.move(int(SCREEN_WEIGHT / 2) - 50, SCREEN_HEIGHT)
+			# 隐藏时移动到当前屏幕的顶部中央
+			x_center = screen_x + int(SCREEN_WEIGHT / 2) - 50
+			y_center = screen_y
+			self.move(screen_x + int(SCREEN_WEIGHT / 2) - 50, screen_y + SCREEN_HEIGHT)
 
 		self.move_window(x_center, y_center)
 		self.qw0.raise_()
