@@ -29,6 +29,7 @@ import markdown2
 from datetime import datetime
 import matplotlib.font_manager
 from PIL import Image, ImageQt
+import time
 
 app = QApplication(sys.argv)
 app.setQuitOnLastWindowClosed(False)
@@ -134,7 +135,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg2.setLayout(blay2)
 
 		widg3 = QWidget()
-		lbl1 = QLabel('Version 2.1.1', self)
+		lbl1 = QLabel('Version 2.1.2', self)
 		blay3 = QHBoxLayout()
 		blay3.setContentsMargins(0, 0, 0, 0)
 		blay3.addStretch()
@@ -597,7 +598,7 @@ class window_update(QWidget):  # 增加更新页面（Check for Updates）
 
 	def initUI(self):  # 说明页面内信息
 
-		self.lbl = QLabel('Current Version: v2.1.1', self)
+		self.lbl = QLabel('Current Version: v2.1.2', self)
 		self.lbl.move(30, 45)
 
 		lbl0 = QLabel('Download Update:', self)
@@ -692,12 +693,16 @@ class window_update(QWidget):  # 增加更新页面（Check for Updates）
 class window3(QWidget):  # 主窗口
 	def __init__(self):
 		super().__init__()
+		self._splitter2_ratio = None
+		self._splitter2_user_set = False
+		self._always_on_top = True
 		self._screen_signals_connected = False
 		self._tracked_screen = None
 		self.initUI()
 
 	def initUI(self):
-		self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+		self._always_on_top = self._load_always_on_top()
+		self._apply_window_flags()
 		self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 		SCREEN_WEIGHT = int(self.screen().availableGeometry().width())
 		SCREEN_HEIGHT = int(self.screen().availableGeometry().height())
@@ -738,6 +743,7 @@ class window3(QWidget):  # 主窗口
 		self.splitter2.addWidget(self.splitter1)
 		self.splitter2.addWidget(self.bottom)
 		self.splitter2.setSizes([SCREEN_HEIGHT - 200, 100])
+		self._splitter2_ratio = self._default_splitter2_ratio(SCREEN_HEIGHT)
 		self.splitter2.splitterMoved.connect(self.splitter2_move)
 		self.splitter2.setStyleSheet('''
 					QSplitter::handle{
@@ -1011,13 +1017,65 @@ The window will float at top all the time as you focus on typing. If you want to
 		# 调整主内容区域的高度
 		self.qw0.setFixedHeight(screen_height - 118)
 		# 调整分割器的尺寸
-		self.splitter2.setSizes([screen_height - 200, 100])
+		self._apply_splitter2_ratio(screen_height)
 		# 调整底部图片的位置
 		self.l1.move(0, screen_height - 215)
 		# 调整蓝色按钮的位置
 		self.btn_00.move(160, screen_height - 35)
 		# 调整设置按钮的位置
 		self.btn0_1.move(35, screen_height - 185)
+
+	def _default_splitter2_ratio(self, screen_height):
+		total = max(screen_height - 100, 1)
+		return (screen_height - 200) / total
+
+	def _apply_splitter2_ratio(self, screen_height):
+		if self._splitter2_ratio is None:
+			self._splitter2_ratio = self._default_splitter2_ratio(screen_height)
+		ratio = self._splitter2_ratio if self._splitter2_user_set else self._default_splitter2_ratio(screen_height)
+		ratio = min(max(ratio, 0.05), 0.95)
+		top = int(1000 * ratio)
+		bottom = max(1, 1000 - top)
+		self.splitter2.setSizes([top, bottom])
+
+	def _load_always_on_top(self):
+		try:
+			value = codecs.open(BasePath + 'always_on_top.txt', 'r', encoding='utf-8').read().strip()
+			return value != '0'
+		except Exception:
+			return True
+
+	def _apply_window_flags(self):
+		flags = Qt.WindowType.FramelessWindowHint
+		if self._always_on_top:
+			flags |= Qt.WindowType.WindowStaysOnTopHint
+		self.setWindowFlags(flags)
+
+	def _current_window_screen_geometry(self):
+		window_handle = self.windowHandle()
+		if window_handle and window_handle.screen():
+			return window_handle.screen().availableGeometry()
+		return self._current_screen_geometry()
+
+	def set_always_on_top(self, enabled):
+		was_visible = self.isVisible()
+		screen_geom = self._current_window_screen_geometry()
+		self._always_on_top = bool(enabled)
+		self._apply_window_flags()
+		if was_visible:
+			self.show()
+			self.raise_()
+			if self._always_on_top:
+				self.activateWindow()
+			self._apply_screen_geometry(screen_geom)
+		try:
+			with open(BasePath + 'always_on_top.txt', 'w', encoding='utf-8') as f0:
+				f0.write('1' if self._always_on_top else '0')
+		except Exception:
+			pass
+
+	def is_always_on_top(self):
+		return self._always_on_top
 
 	def move_window(self, width, height):
 		animation = QPropertyAnimation(self, b"geometry", self)
@@ -1172,6 +1230,11 @@ The window will float at top all the time as you focus on typing. If you want to
 			self.toprightshow = 0
 		if self.topright.width() != 0 and self.topright.height() != 0:
 			self.toprightshow = 1
+		sizes = self.splitter2.sizes()
+		total = sum(sizes)
+		if total > 0:
+			self._splitter2_ratio = sizes[0] / total
+			self._splitter2_user_set = True
 
 	def text_change(self):
 		if self.bottom.toPlainText() != '':
@@ -2024,6 +2087,10 @@ class window4(QWidget):  # Customization settings
 		self.checkBox0.setChecked(True)
 		self.checkBox0.clicked.connect(self.auto_scroll)
 
+		self.checkBox_top = QCheckBox('Always on top', self)
+		self.checkBox_top.setChecked(w3.is_always_on_top())
+		self.checkBox_top.clicked.connect(self.toggle_on_top)
+
 		self.widget1 = QComboBox(self)
 		self.widget1.addItems(['Last used', 'Default font'])
 		font_manager = matplotlib.font_manager.FontManager()
@@ -2038,6 +2105,7 @@ class window4(QWidget):  # Customization settings
 		b43 = QHBoxLayout()
 		b43.setContentsMargins(0, 0, 0, 0)
 		b43.addWidget(self.checkBox0)
+		b43.addWidget(self.checkBox_top)
 		b43.addWidget(self.widget1)
 		wid3.setLayout(b43)
 
@@ -2206,6 +2274,9 @@ class window4(QWidget):  # Customization settings
 			w3.scrollbar.valueChanged.connect(w3.scrollchanged)
 		if not self.checkBox0.isChecked():
 			w3.scrollbar.valueChanged.disconnect(w3.scrollchanged)
+
+	def toggle_on_top(self):
+		w3.set_always_on_top(self.checkBox_top.isChecked())
 
 	def value_change(self, value):
 		self.lbl2.setText(str(value))
