@@ -4,13 +4,20 @@
 # coding=utf-8
 # coding:utf-8
 
+import base64
 import codecs
+import hashlib
+import json
+import html as html_lib
+import tempfile
+import traceback
+import uuid
 from PyQt6.QtWidgets import (QWidget, QPushButton, QApplication,
 							 QLabel, QHBoxLayout, QVBoxLayout,
 							 QSystemTrayIcon, QMenu, QComboBox, QDialog,
-							 QMenuBar, QFileDialog,
+							 QMenuBar, QFileDialog, QMessageBox, QLineEdit,
 							 QSplitter, QTextEdit, QListWidget, QCheckBox, QSlider)
-from PyQt6.QtCore import Qt, QPropertyAnimation, QRect, QTimer
+from PyQt6.QtCore import Qt, QPropertyAnimation, QRect, QTimer, QThread, pyqtSignal, QSize
 from PyQt6.QtGui import QAction, QIcon, QColor, QFontDatabase, QPixmap, QCursor, QGuiApplication
 import PyQt6.QtGui
 import sys
@@ -30,12 +37,18 @@ from datetime import datetime
 import matplotlib.font_manager
 from PIL import Image, ImageQt
 import time
+try:
+	from AppKit import NSWorkspace
+except ImportError:
+	NSWorkspace = None
 
 app = QApplication(sys.argv)
 app.setQuitOnLastWindowClosed(False)
 
 BasePath = '/Applications/Watermelon.app/Contents/Resources/'
 #BasePath = ''
+NOTES_CACHE_PATH = os.path.join(BasePath, "notes_cache.json")
+DEBUG_LAYOUT = False
 
 # Create the icon
 icon = QIcon(BasePath + "wtmenu.icns")
@@ -135,7 +148,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg2.setLayout(blay2)
 
 		widg3 = QWidget()
-		lbl1 = QLabel('Version 2.1.2', self)
+		lbl1 = QLabel('Version 2.2.0', self)
 		blay3 = QHBoxLayout()
 		blay3.setContentsMargins(0, 0, 0, 0)
 		blay3.addStretch()
@@ -598,7 +611,7 @@ class window_update(QWidget):  # 增加更新页面（Check for Updates）
 
 	def initUI(self):  # 说明页面内信息
 
-		self.lbl = QLabel('Current Version: v2.1.2', self)
+		self.lbl = QLabel('Current Version: v2.2.0', self)
 		self.lbl.move(30, 45)
 
 		lbl0 = QLabel('Download Update:', self)
@@ -689,6 +702,1272 @@ class window_update(QWidget):  # 增加更新页面（Check for Updates）
 			self.lbl2.setText(alertupdate)
 			self.lbl2.adjustSize()
 
+MD_EMBED_TAG_ID = "md-source-7c3a6b24"
+CACHE_DIR = Path.home() / "Library" / "Caches" / "NotesMarkdown"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+MD_EMBED_PREFIX = f'<div id="{MD_EMBED_TAG_ID}" style="display:none;white-space:pre-wrap;">'
+MD_EMBED_SUFFIX = '</div>'
+
+
+def cache_path_for(cache_key):
+	safe = re.sub(r"[^A-Za-z0-9._-]+", "_", cache_key).strip("_")
+	digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:12]
+	name = safe or "note"
+	return CACHE_DIR / f"{name}_{digest}.md"
+
+
+def write_cache_markdown(cache_key, md):
+	path = cache_path_for(cache_key)
+	path.write_text(md, encoding="utf-8")
+
+
+def delete_cache_file(cache_key):
+	path = cache_path_for(cache_key)
+	try:
+		path.unlink()
+	except FileNotFoundError:
+		pass
+
+
+def cache_tag_for(cache_key):
+	return f"[[MD-CACHE:{cache_key}]]"
+
+
+def read_cache_markdown(cache_key):
+	path = cache_path_for(cache_key)
+	if not path.exists():
+		return None
+	try:
+		text = path.read_text(encoding="utf-8")
+	except OSError:
+		return None
+	match = re.search(r"MD64:([A-Za-z0-9+/=\\s]+)", text)
+	if match:
+		b64 = re.sub(r"\\s+", "", match.group(1))
+		try:
+			return base64.b64decode(b64).decode("utf-8")
+		except Exception:
+			return None
+	return text
+
+
+def strip_embedded_markdown(html):
+	pattern = re.compile(
+		r'<div id="' + re.escape(MD_EMBED_TAG_ID) + r'"[^>]*>.*?</div>',
+		re.DOTALL | re.IGNORECASE,
+	)
+	return pattern.sub("", html)
+
+
+def extract_embedded_markdown(html):
+	pattern = re.compile(
+		r'<div id="' + re.escape(MD_EMBED_TAG_ID) + r'"[^>]*>(.*?)</div>',
+		re.DOTALL | re.IGNORECASE,
+	)
+	match = pattern.search(html)
+	if not match:
+		return None
+	try:
+		b64 = match.group(1).strip()
+		b64 = re.sub(r"\\s+", "", b64)
+		raw = base64.b64decode(b64)
+		return raw.decode("utf-8")
+	except Exception:
+		return None
+
+
+def embed_markdown(html, md):
+	clean_html = strip_embedded_markdown(html).strip()
+	b64 = base64.b64encode(md.encode("utf-8")).decode("ascii")
+	return f"{clean_html}{MD_EMBED_PREFIX}{b64}{MD_EMBED_SUFFIX}\n"
+
+
+def html_to_plain(html):
+	converter = html2text.HTML2Text()
+	converter.body_width = 0
+	converter.ignore_links = True
+	converter.ignore_images = True
+	converter.single_line_break = True
+	return converter.handle(html)
+
+
+def preprocess_notes_html(html):
+	placeholders = {}
+	processed_html = fix_list_nesting(html)
+
+	def create_placeholder_raw(markdown_text):
+		placeholder = f"@@PH{uuid.uuid4().hex}@@"
+		placeholders[placeholder] = markdown_text
+		return f"<div>{placeholder}</div>"
+
+	def strip_tags(text):
+		return re.sub(r'<[^>]+>', '', text)
+
+	def normalize_ws(text):
+		text = text.replace("&quot", '"')
+		text = html_lib.unescape(text)
+		text = text.replace("\u00a0", " ")
+		return re.sub(r'\s+', ' ', text).strip()
+
+	def clean_code_line(text):
+		text = text.replace("&quot", '"')
+		text = html_lib.unescape(text)
+		text = text.replace("\u00a0", " ")
+		return text.rstrip("\n")
+
+	def extract_span_text(inner, size_px):
+		spans = re.findall(
+			rf'<span[^>]*font-size:\s*{size_px}px[^>]*>(.*?)</span>',
+			inner,
+			re.IGNORECASE | re.DOTALL,
+		)
+		if not spans:
+			return None
+		text = normalize_ws(''.join(strip_tags(s) for s in spans))
+		return text if text else None
+
+	def replace_font_heading(match, size_px, prefix):
+		inner = match.group(1)
+		if not re.search(rf'font-size:\s*{size_px}px', inner, re.IGNORECASE):
+			return match.group(0)
+		text = extract_span_text(inner, size_px)
+		if not text:
+			return match.group(0)
+		return create_placeholder_raw(f"\n\n{prefix} {text}\n")
+
+	def convert_table(table_html):
+		rows = re.findall(r'<tr[^>]*>(.*?)</tr>', table_html, re.IGNORECASE | re.DOTALL)
+		if not rows:
+			return None
+		parsed = []
+		header_cells_html = None
+		max_cols = 0
+		for row_idx, row in enumerate(rows):
+			cells = re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', row, re.IGNORECASE | re.DOTALL)
+			if not cells:
+				continue
+			texts = [normalize_ws(strip_tags(c)) for c in cells]
+			parsed.append(texts)
+			max_cols = max(max_cols, len(texts))
+			if row_idx == 0:
+				header_cells_html = cells
+		if not parsed:
+			return None
+		for row in parsed:
+			if len(row) < max_cols:
+				row.extend([""] * (max_cols - len(row)))
+		header = parsed[0]
+		aligns = [":---"] * max_cols
+		if header_cells_html:
+			extra_bold = []
+			for idx, cell_html in enumerate(header_cells_html):
+				if re.search(r'text-align\s*:\s*center', cell_html, re.IGNORECASE):
+					aligns[idx] = ":---:"
+					continue
+				if re.search(r'text-align\s*:\s*right', cell_html, re.IGNORECASE):
+					aligns[idx] = "---:"
+					continue
+				if len(re.findall(r'<b\b', cell_html, re.IGNORECASE)) > 1:
+					extra_bold.append(idx)
+			if extra_bold:
+				if len(extra_bold) >= 1:
+					aligns[extra_bold[0]] = ":---:"
+				if len(extra_bold) >= 2:
+					aligns[extra_bold[1]] = "---:"
+		lines = [
+			"| " + " | ".join(header) + " |",
+			"| " + " | ".join(aligns) + " |",
+		]
+		for row in parsed[1:]:
+			lines.append("| " + " | ".join(row) + " |")
+		return "\n".join(lines)
+
+	pattern_table = re.compile(
+		r'<object>\s*(<table[^>]*>.*?</table>)\s*</object>',
+		re.IGNORECASE | re.DOTALL,
+	)
+
+	def replace_table(match):
+		md_table = convert_table(match.group(1))
+		if not md_table:
+			return match.group(0)
+		return create_placeholder_raw(f"\n\n{md_table}\n\n")
+
+	processed_html = pattern_table.sub(replace_table, processed_html)
+
+	pattern_div = re.compile(r'<div>(.*?)</div>', re.IGNORECASE | re.DOTALL)
+	processed_html = pattern_div.sub(lambda m: replace_font_heading(m, 24, "#"), processed_html)
+	processed_html = pattern_div.sub(lambda m: replace_font_heading(m, 18, "##"), processed_html)
+
+	pattern_h3 = re.compile(
+		r'<div>\s*<b>(.*?)</b>\s*<b>\s*\(H3\)\s*</b>\s*</div>',
+		re.IGNORECASE | re.DOTALL,
+	)
+	processed_html = pattern_h3.sub(
+		lambda m: create_placeholder_raw(
+			f"\n\n### {normalize_ws(strip_tags(m.group(1)))} (H3)\n"
+		),
+		processed_html,
+	)
+
+	bold_div_pattern = r'<div>\s*(?:<b>.*?</b>\s*|<br\s*/?>\s*)+</div>'
+
+	def bold_div_text(div_html):
+		text = normalize_ws(strip_tags(div_html))
+		return re.sub(r"\s+([:：,，.!?？！])", r"\1", text)
+
+	pattern_code_label = re.compile(
+		bold_div_pattern + r'(?=\s*<div>\s*<font[^>]*face="Courier"[^>]*>\s*<tt>)',
+		re.IGNORECASE | re.DOTALL,
+	)
+	processed_html = pattern_code_label.sub(
+		lambda m: create_placeholder_raw(f"**{bold_div_text(m.group(0))}**\n"),
+		processed_html,
+	)
+
+	pattern_list_heading = re.compile(
+		bold_div_pattern + r'(?=\s*<(ul|ol)\b)',
+		re.IGNORECASE | re.DOTALL,
+	)
+	processed_html = pattern_list_heading.sub(
+		lambda m: create_placeholder_raw(f"\n\n**{bold_div_text(m.group(0))}**\n"),
+		processed_html,
+	)
+
+	pattern_table_heading = re.compile(
+		bold_div_pattern + r'(?=\s*<div>\s*<object>)',
+		re.IGNORECASE | re.DOTALL,
+	)
+	processed_html = pattern_table_heading.sub(
+		lambda m: create_placeholder_raw(f"\n\n**{bold_div_text(m.group(0))}**\n"),
+		processed_html,
+	)
+
+	pattern_bold_div = re.compile(
+		bold_div_pattern
+		+ r'(?!\s*<(ul|ol)\b)'
+		+ r'(?!\s*<div>\s*<object)'
+		+ r'(?!\s*<div>\s*<font[^>]*face="Courier")',
+		re.IGNORECASE | re.DOTALL,
+	)
+
+	def replace_bold_div(match):
+		inner = match.group(0)
+		if re.search(r'font-size', inner, re.IGNORECASE):
+			return inner
+		text = bold_div_text(inner)
+		if not text:
+			return inner
+		return create_placeholder_raw(f"\n\n**{text}**\n")
+
+	processed_html = pattern_bold_div.sub(replace_bold_div, processed_html)
+
+	processed_html = replace_lists_with_markdown(
+		processed_html,
+		create_placeholder_raw,
+		normalize_ws,
+		strip_tags,
+	)
+
+	pattern_code_block = re.compile(
+		r'(?:<div>\s*<font[^>]*face="Courier"[^>]*>\s*<tt>.*?</tt>\s*</font>\s*</div>\s*){1,}',
+		re.IGNORECASE | re.DOTALL,
+	)
+
+	def replace_code_block(match):
+		block = match.group(0)
+		lines = re.findall(r'<tt>(.*?)</tt>', block, re.IGNORECASE | re.DOTALL)
+		if not lines:
+			return match.group(0)
+		cleaned = [clean_code_line(line) for line in lines]
+		fence = "```\n" + "\n".join(cleaned) + "\n```\n"
+		return create_placeholder_raw(f"\n\n{fence}\n")
+
+	processed_html = pattern_code_block.sub(replace_code_block, processed_html)
+
+	processed_html = rewrite_list_items(processed_html, normalize_ws, strip_tags)
+
+	return processed_html, placeholders
+
+
+def strip_tags(text):
+	return re.sub(r"<[^>]+>", "", text)
+
+
+def normalize_ws(text):
+	text = text.replace("&quot", '"')
+	text = html_lib.unescape(text)
+	text = text.replace("\u00a0", " ")
+	return re.sub(r"\s+", " ", text).strip()
+
+
+def clean_code_line(text):
+	text = text.replace("&quot", '"')
+	text = html_lib.unescape(text)
+	text = text.replace("\u00a0", " ")
+	return text.rstrip("\n")
+
+
+def fix_list_nesting(html):
+	pattern = re.compile(
+		r'(<li[^>]*>.*?</li>)\s*(<(ul|ol)[^>]*>.*?</\3>)',
+		re.IGNORECASE | re.DOTALL,
+	)
+	prev = None
+	while prev != html:
+		prev = html
+		html = pattern.sub(
+			lambda m: re.sub(r'</li>\s*$', '', m.group(1), flags=re.IGNORECASE | re.DOTALL)
+			+ m.group(2)
+			+ "</li>",
+			html,
+		)
+	return html
+
+
+def replace_lists_with_markdown(html, create_placeholder, normalize_ws_func, strip_tags_func):
+	tag_pattern = re.compile(r'<(ul|ol)\b[^>]*>', re.IGNORECASE)
+	pos = 0
+	out = []
+	while True:
+		match = tag_pattern.search(html, pos)
+		if not match:
+			out.append(html[pos:])
+			break
+		start = match.start()
+		end = find_matching_list_end(html, match.start())
+		if end is None:
+			out.append(html[pos:])
+			break
+		out.append(html[pos:start])
+		list_html = html[start:end]
+		md_list = convert_list_to_markdown(list_html, normalize_ws_func, strip_tags_func, indent=0)
+		out.append(create_placeholder("\n\n" + md_list + "\n\n"))
+		pos = end
+	return "".join(out)
+
+
+def find_matching_list_end(html, start):
+	tag_re = re.compile(r'<(/?)(ul|ol)\b[^>]*>', re.IGNORECASE)
+	depth = 0
+	for m in tag_re.finditer(html, start):
+		if m.group(1) == "":
+			depth += 1
+		else:
+			depth -= 1
+			if depth == 0:
+				return m.end()
+	return None
+
+
+def convert_list_to_markdown(list_html, normalize_ws_func, strip_tags_func, indent):
+	tag_match = re.match(r'<(ul|ol)\b', list_html, re.IGNORECASE)
+	if not tag_match:
+		return ""
+	list_tag = tag_match.group(1).lower()
+	items = extract_list_items(list_html)
+	lines = []
+	index = 1
+	for item_html in items:
+		li_inner = re.sub(r'^<li[^>]*>|</li>$', '', item_html, flags=re.IGNORECASE | re.DOTALL)
+		nested_lists = extract_nested_lists(li_inner)
+		text_html = li_inner
+		for _, nested_html in nested_lists:
+			text_html = text_html.replace(nested_html, "")
+		text = normalize_ws_func(strip_tags_func(text_html))
+		if not text:
+			continue
+		if list_tag == "ol":
+			prefix = f"{index}. "
+			index += 1
+		else:
+			prefix = "- "
+		style = detect_li_style(li_inner)
+		text = apply_li_style(text, style)
+		lines.append(" " * indent + prefix + text)
+		for _, nested_html in nested_lists:
+			nested_md = convert_list_to_markdown(nested_html, normalize_ws_func, strip_tags_func, indent + 2)
+			if nested_md:
+				lines.append(nested_md)
+	return "\n".join(lines)
+
+
+def extract_list_items(list_html):
+	li_re = re.compile(r'<li\b[^>]*>', re.IGNORECASE)
+	tag_re = re.compile(r'</?li\b[^>]*>', re.IGNORECASE)
+	items = []
+	pos = 0
+	while True:
+		m = li_re.search(list_html, pos)
+		if not m:
+			break
+		start = m.start()
+		depth = 0
+		for t in tag_re.finditer(list_html, start):
+			if t.group(0).lower().startswith("<li"):
+				depth += 1
+			else:
+				depth -= 1
+				if depth == 0:
+					end = t.end()
+					items.append(list_html[start:end])
+					pos = end
+					break
+		else:
+			break
+	return items
+
+
+def extract_nested_lists(li_inner):
+	nested = []
+	tag_re = re.compile(r'<(ul|ol)\b[^>]*>', re.IGNORECASE)
+	pos = 0
+	while True:
+		m = tag_re.search(li_inner, pos)
+		if not m:
+			break
+		start = m.start()
+		end = find_matching_list_end(li_inner, start)
+		if end is None:
+			break
+		block = li_inner[start:end]
+		nested.append((m.group(1).lower(), block))
+		pos = end
+	return nested
+
+
+def detect_li_style(li_html):
+	has_code = bool(re.search(r'<tt>|font[^>]*face="Courier"', li_html, re.IGNORECASE))
+	has_strike = bool(re.search(r'<(strike|s|del)\b', li_html, re.IGNORECASE))
+	has_bold = bool(re.search(r'<(b|strong)\b', li_html, re.IGNORECASE))
+	has_italic = bool(re.search(r'<(i|em)\b', li_html, re.IGNORECASE))
+	if has_code:
+		return "code"
+	if has_strike:
+		return "strike"
+	if has_bold and has_italic:
+		return "bold_italic"
+	if has_bold:
+		return "bold"
+	if has_italic:
+		return "italic"
+	return "plain"
+
+
+def apply_li_style(text, style):
+	if style == "code":
+		return f"`{text}`"
+	if style == "strike":
+		return f"~~{text}~~"
+	if style == "bold_italic":
+		return f"***{text}***"
+	if style == "bold":
+		return f"**{text}**"
+	if style == "italic":
+		return f"*{text}*"
+	return text
+
+
+def rewrite_list_items(html, normalize_ws_func, strip_tags_func):
+	pattern_li = re.compile(r'<li[^>]*>(.*?)</li>', re.IGNORECASE | re.DOTALL)
+
+	def replace_list_item(match):
+		inner = match.group(1)
+		if re.search(r'<(ul|ol)\b', inner, re.IGNORECASE):
+			return match.group(0)
+		inner_no_br = re.sub(r'<br\s*/?>', '', inner, flags=re.IGNORECASE)
+		full_text = normalize_ws_func(strip_tags_func(inner_no_br))
+		if not full_text:
+			return match.group(0)
+
+		link_match = re.search(r'<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', inner_no_br, re.IGNORECASE | re.DOTALL)
+		if link_match:
+			return f'<li><a href="{link_match.group(1)}">{strip_tags_func(link_match.group(2))}</a></li>'
+
+		has_code = bool(re.search(r'<tt>|font[^>]*face="Courier"', inner_no_br, re.IGNORECASE))
+		has_strike = bool(re.search(r'<(strike|s|del)\b', inner_no_br, re.IGNORECASE))
+		has_bold = bool(re.search(r'<(b|strong)\b', inner_no_br, re.IGNORECASE))
+		has_italic = bool(re.search(r'<(i|em)\b', inner_no_br, re.IGNORECASE))
+		has_underline = bool(re.search(r'<u\b', inner_no_br, re.IGNORECASE))
+
+		if has_code:
+			return f"<li><code>{full_text}</code></li>"
+		if has_strike:
+			return f"<li><del>{full_text}</del></li>"
+		if has_bold and has_italic:
+			return f"<li><strong><em>{full_text}</em></strong></li>"
+		if has_bold:
+			return f"<li><strong>{full_text}</strong></li>"
+		if has_italic:
+			return f"<li><em>{full_text}</em></li>"
+		if has_underline:
+			return f"<li>{full_text}</li>"
+		return match.group(0)
+
+	return pattern_li.sub(replace_list_item, html)
+
+
+def parse_blocks(html):
+	tag_re = re.compile(r"<(div|ul|ol)\b", re.IGNORECASE)
+	blocks = []
+	pos = 0
+	while True:
+		m = tag_re.search(html, pos)
+		if not m:
+			break
+		start = m.start()
+		tag = m.group(1).lower()
+		end = find_matching_tag_end(html, start, tag)
+		if end is None:
+			break
+		block_html = html[start:end]
+		if tag == "div":
+			inner = re.sub(r"^<div[^>]*>|</div>$", "", block_html, flags=re.IGNORECASE | re.DOTALL)
+			blocks.append({"type": "div", "html": block_html, "inner": inner})
+		else:
+			blocks.append({"type": tag, "html": block_html})
+		pos = end
+	return blocks
+
+
+def find_matching_tag_end(html, start, tag):
+	tag_re = re.compile(rf"<(/?){tag}\b[^>]*>", re.IGNORECASE)
+	depth = 0
+	for m in tag_re.finditer(html, start):
+		if m.group(1) == "":
+			depth += 1
+		else:
+			depth -= 1
+			if depth == 0:
+				return m.end()
+	return None
+
+
+def div_is_font_heading(inner, size_px):
+	return bool(re.search(rf"font-size:\s*{size_px}px", inner, re.IGNORECASE))
+
+
+def div_is_h3(inner):
+	return bool(re.search(r"\(H3\)", inner, re.IGNORECASE))
+
+
+def div_is_code_line(inner):
+	return bool(re.search(r"<tt>.*?</tt>", inner, re.IGNORECASE | re.DOTALL))
+
+
+def extract_code_line(inner):
+	match = re.search(r"<tt>(.*?)</tt>", inner, re.IGNORECASE | re.DOTALL)
+	if not match:
+		return ""
+	return clean_code_line(strip_tags(match.group(1)))
+
+
+def div_contains_table(inner):
+	return bool(re.search(r"<object>\s*<table", inner, re.IGNORECASE))
+
+
+def convert_table_from_div(inner):
+	match = re.search(r"<object>\s*(<table[^>]*>.*?</table>)\s*</object>", inner, re.IGNORECASE | re.DOTALL)
+	if not match:
+		return ""
+	return convert_table_html(match.group(1))
+
+
+def convert_table_html(table_html):
+	rows = re.findall(r"<tr[^>]*>(.*?)</tr>", table_html, re.IGNORECASE | re.DOTALL)
+	if not rows:
+		return ""
+	parsed = []
+	header_cells_html = None
+	max_cols = 0
+	for row_idx, row in enumerate(rows):
+		cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.IGNORECASE | re.DOTALL)
+		if not cells:
+			continue
+		texts = [normalize_ws(strip_tags(c)) for c in cells]
+		parsed.append(texts)
+		max_cols = max(max_cols, len(texts))
+		if row_idx == 0:
+			header_cells_html = cells
+	if not parsed:
+		return ""
+	for row in parsed:
+		if len(row) < max_cols:
+			row.extend([""] * (max_cols - len(row)))
+	header = parsed[0]
+	aligns = [":---"] * max_cols
+	if header_cells_html:
+		extra_bold = []
+		for idx, cell_html in enumerate(header_cells_html):
+			if re.search(r"text-align\s*:\s*center", cell_html, re.IGNORECASE):
+				aligns[idx] = ":---:"
+				continue
+			if re.search(r"text-align\s*:\s*right", cell_html, re.IGNORECASE):
+				aligns[idx] = "---:"
+				continue
+			if len(re.findall(r"<b\b", cell_html, re.IGNORECASE)) > 1:
+				extra_bold.append(idx)
+		if extra_bold:
+			if len(extra_bold) >= 1:
+				aligns[extra_bold[0]] = ":---:"
+			if len(extra_bold) >= 2:
+				aligns[extra_bold[1]] = "---:"
+	lines = [
+		"| " + " | ".join(header) + " |",
+		"| " + " | ".join(aligns) + " |",
+	]
+	for row in parsed[1:]:
+		lines.append("| " + " | ".join(row) + " |")
+	return "\n".join(lines)
+
+
+def div_has_bold(inner):
+	return bool(re.search(r"<(b|strong)\b", inner, re.IGNORECASE))
+
+
+def div_has_italic(inner):
+	return bool(re.search(r"<(i|em)\b", inner, re.IGNORECASE))
+
+
+def div_has_strike(inner):
+	return bool(re.search(r"<(strike|s|del)\b", inner, re.IGNORECASE))
+
+
+def div_has_underline(inner):
+	return bool(re.search(r"<u\b", inner, re.IGNORECASE))
+
+
+def div_has_code(inner):
+	return bool(re.search(r"<tt\b|font[^>]*face=\"Courier\"", inner, re.IGNORECASE))
+
+
+def div_has_list(inner):
+	return bool(re.search(r"<(ul|ol|li)\b", inner, re.IGNORECASE))
+
+
+def div_has_table(inner):
+	return bool(re.search(r"<(table|object)\b", inner, re.IGNORECASE))
+
+
+def div_is_bold_italic_line(inner):
+	if not (div_has_bold(inner) and div_has_italic(inner)):
+		return False
+	if div_has_strike(inner) or div_has_underline(inner) or div_has_code(inner):
+		return False
+	if div_has_list(inner) or div_has_table(inner):
+		return False
+	return True
+
+
+def div_is_bold_strike_line(inner):
+	if not (div_has_bold(inner) and div_has_strike(inner)):
+		return False
+	if div_has_italic(inner) or div_has_underline(inner) or div_has_code(inner):
+		return False
+	if div_has_list(inner) or div_has_table(inner):
+		return False
+	return True
+
+
+def div_is_italic_strike_line(inner):
+	if not (div_has_italic(inner) and div_has_strike(inner)):
+		return False
+	if div_has_bold(inner) or div_has_underline(inner) or div_has_code(inner):
+		return False
+	if div_has_list(inner) or div_has_table(inner):
+		return False
+	return True
+
+
+def div_is_strike_line(inner):
+	if not div_has_strike(inner):
+		return False
+	if div_has_bold(inner) or div_has_italic(inner) or div_has_underline(inner) or div_has_code(inner):
+		return False
+	if div_has_list(inner) or div_has_table(inner):
+		return False
+	return True
+
+
+def div_is_italic_line(inner):
+	if not div_has_italic(inner):
+		return False
+	if div_has_bold(inner) or div_has_strike(inner) or div_has_underline(inner) or div_has_code(inner):
+		return False
+	if div_has_list(inner) or div_has_table(inner):
+		return False
+	return True
+
+
+def div_is_bold_only(inner):
+	temp = re.sub(r"<b[^>]*>.*?</b>", "", inner, flags=re.IGNORECASE | re.DOTALL)
+	temp = re.sub(r"<br\s*/?>", "", temp, flags=re.IGNORECASE)
+	temp = strip_tags(temp)
+	return normalize_ws(temp) == ""
+
+
+def strip_hidden_marker(html, marker):
+	pattern = re.compile(
+		r'<div[^>]*style="[^"]*display\s*:\s*none[^"]*"[^>]*>\s*'
+		+ re.escape(marker)
+		+ r'\s*</div>',
+		re.IGNORECASE | re.DOTALL,
+	)
+	return pattern.sub("", html)
+
+
+def html_to_markdown(html, marker=None):
+	html_body = strip_embedded_markdown(html)
+	if marker:
+		html_body = strip_hidden_marker(html_body, marker)
+	html_body = fix_list_nesting(html_body)
+	blocks = parse_blocks(html_body)
+	md_parts = []
+	i = 0
+	while i < len(blocks):
+		block = blocks[i]
+		if block["type"] in {"ul", "ol"}:
+			md_list = convert_list_to_markdown(block["html"], normalize_ws, strip_tags, indent=0)
+			if md_list:
+				md_parts.append(md_list)
+			i += 1
+			continue
+		if block["type"] != "div":
+			i += 1
+			continue
+		inner = block["inner"]
+		if div_contains_table(inner):
+			md_table = convert_table_from_div(inner)
+			if md_table:
+				md_parts.append(md_table)
+			i += 1
+			continue
+		if div_is_font_heading(inner, 24):
+			md_parts.append(f"# {normalize_ws(strip_tags(inner))}")
+			i += 1
+			continue
+		if div_is_font_heading(inner, 18):
+			md_parts.append(f"## {normalize_ws(strip_tags(inner))}")
+			i += 1
+			continue
+		if div_is_h3(inner):
+			md_parts.append(f"### {normalize_ws(strip_tags(inner))}")
+			i += 1
+			continue
+		if div_is_code_line(inner):
+			code_lines = []
+			while i < len(blocks) and blocks[i]["type"] == "div" and div_is_code_line(blocks[i]["inner"]):
+				line = extract_code_line(blocks[i]["inner"])
+				if line:
+					code_lines.append(line)
+				i += 1
+			if code_lines:
+				md_parts.append("```\n" + "\n".join(code_lines) + "\n```")
+			continue
+		if div_is_bold_strike_line(inner):
+			text = normalize_ws(strip_tags(inner))
+			if text:
+				md_parts.append(f"**~~{text}~~**")
+			i += 1
+			continue
+		if div_is_italic_strike_line(inner):
+			text = normalize_ws(strip_tags(inner))
+			if text:
+				md_parts.append(f"*~~{text}~~*")
+			i += 1
+			continue
+		if div_is_bold_italic_line(inner):
+			text = normalize_ws(strip_tags(inner))
+			if text:
+				md_parts.append(f"***{text}***")
+			i += 1
+			continue
+		if div_is_strike_line(inner):
+			text = normalize_ws(strip_tags(inner))
+			if text:
+				md_parts.append(f"~~{text}~~")
+			i += 1
+			continue
+		if div_is_italic_line(inner):
+			text = normalize_ws(strip_tags(inner))
+			if text:
+				md_parts.append(f"*{text}*")
+			i += 1
+			continue
+		if div_is_bold_only(inner):
+			text = normalize_ws(strip_tags(inner))
+			if text:
+				md_parts.append(f"**{text}**")
+			i += 1
+			continue
+		text = normalize_ws(strip_tags(inner))
+		if text:
+			md_parts.append(text)
+		i += 1
+	return normalize_markdown("\n\n".join(md_parts))
+
+
+def normalize_markdown(md):
+	md = md.replace("\u00a0", " ")
+	md = re.sub(r"(?m)^\s*\*\*\s*\*\*\s*$", "", md)
+	md = re.sub(r"(?m)^\s*__\s*__\s*$", "", md)
+	md = normalize_emphasis(md)
+	md = dedent_list_items(md)
+	md = merge_adjacent_bold(md)
+	md = re.sub(r"(?m)^(#{1,6} .+)\n\s*\n(?=#{1,6} )", r"\1\n", md)
+	md = re.sub(r"(?m)^[ \t]+$", "", md)
+	md = re.sub(r"\n{3,}", "\n\n", md)
+	return md.strip()
+
+
+def normalize_emphasis(md):
+	md = re.sub(r"\*\*_([^*\n]+)_\*\*", r"***\1***", md)
+	md = re.sub(r"__\*([^*\n]+)\*__", r"***\1***", md)
+	md = re.sub(r"(?<!\w)_([^_\n]+)_(?!\w)", r"*\1*", md)
+	return md
+
+
+def dedent_list_items(md):
+	lines = md.splitlines()
+	out = []
+	in_fence = False
+	i = 0
+	while i < len(lines):
+		line = lines[i]
+		stripped = line.lstrip()
+		if stripped.startswith("```"):
+			in_fence = not in_fence
+			out.append(line)
+			i += 1
+			continue
+		if in_fence or not re.match(r"^\s*([-*+] |\d+\. )", line):
+			out.append(line)
+			i += 1
+			continue
+		block_start = i
+		min_indent = None
+		while i < len(lines):
+			cur = lines[i]
+			cur_strip = cur.lstrip()
+			if cur_strip.startswith("```"):
+				break
+			if cur.strip() == "":
+				i += 1
+				continue
+			if not re.match(r"^\s*([-*+] |\d+\. )", cur):
+				break
+			indent = len(cur) - len(cur.lstrip(" "))
+			min_indent = indent if min_indent is None else min(min_indent, indent)
+			i += 1
+		if min_indent is None:
+			out.append(lines[block_start])
+			i = block_start + 1
+			continue
+		for j in range(block_start, i):
+			cur = lines[j]
+			if cur.strip() == "":
+				out.append(cur)
+				continue
+			if re.match(r"^\s*([-*+] |\d+\. )", cur):
+				out.append(cur[min_indent:])
+			else:
+				out.append(cur)
+	return "\n".join(out)
+
+
+def merge_adjacent_bold(md):
+	prev = None
+	while prev != md:
+		prev = md
+		md = re.sub(r"\*\*([^*\n]+)\*\*[ \t]*\*\*([:：,，.!?？！])\*\*", r"**\1\2**", md)
+		md = re.sub(r"\*\*([^*\n]+)\*\*[ \t]*\*\*([^*\n]+)\*\*", r"**\1 \2**", md)
+	return md
+
+
+def markdown_to_html(md):
+	extras = [
+		"fenced-code-blocks",
+		"tables",
+		"strike",
+		"task_list",
+		"cuddled-lists",
+		"code-friendly",
+	]
+	return markdown2.markdown(md, extras=extras)
+
+
+def notes_html_to_markdown(html, cache_key=None, force_html=False):
+	if not html:
+		return ""
+	if force_html:
+		return html_to_markdown(html)
+	if cache_key:
+		cached = read_cache_markdown(cache_key)
+		if cached is not None:
+			return cached.strip()
+	embedded = extract_embedded_markdown(html)
+	if embedded is not None:
+		return embedded.strip()
+	md = html_to_markdown(html)
+	if cache_key:
+		write_cache_markdown(cache_key, md)
+	return md
+
+
+def _parse_notes_raw(raw):
+	notes = []
+	if raw:
+		for item in raw.split(chr(31)):
+			if not item:
+				continue
+			parts = item.split(chr(30), 1)
+			folder_and_title = parts[0]
+			body = parts[1] if len(parts) > 1 else ""
+			folder_parts = folder_and_title.split(chr(29), 1)
+			folder = folder_parts[0].strip() if folder_parts else "Unfiled"
+			title = folder_parts[1].strip() if len(folder_parts) > 1 else folder_and_title.strip()
+			notes.append({"folder": folder, "title": title, "body": body})
+	return notes
+
+
+def _fetch_notes_snapshot():
+	script = """
+	set AppleScript's text item delimiters to ASCII character 31
+	tell application "Notes"
+		set outList to {}
+		repeat with n in notes
+			set t to name of n
+			set b to ""
+			set f to "Unfiled"
+			set accountName to ""
+			try
+				set c to container of n
+				set cClass to class of c
+				if cClass is folder then
+					set f to name of c
+					try
+						set accountName to name of container of c
+					end try
+				else if cClass is account then
+					set f to name of c
+				end if
+			on error
+				try
+					set f to name of folder of n
+				end try
+			end try
+			if accountName is not "" then
+				set f to accountName & "/" & f
+			end if
+			set end of outList to f & (ASCII character 29) & t & (ASCII character 30) & b
+		end repeat
+		set outText to outList as string
+	end tell
+	return outText
+	"""
+	result = subprocess.run(
+		["osascript", "-e", script],
+		capture_output=True,
+		text=True,
+		check=False,
+	)
+	if result.returncode != 0:
+		message = result.stderr.strip() or "Unknown AppleScript error."
+		raise RuntimeError(message)
+	raw = result.stdout.rstrip("\n")
+	return _parse_notes_raw(raw)
+
+
+def _write_notes_cache(notes, cache_path=NOTES_CACHE_PATH):
+	dir_path = os.path.dirname(cache_path)
+	if dir_path and not os.path.exists(dir_path):
+		os.makedirs(dir_path, exist_ok=True)
+	notes_summary = []
+	for note in notes:
+		folder = (note.get("folder") or "Unfiled").strip() or "Unfiled"
+		title = note.get("title") or "(Untitled)"
+		notes_summary.append({"folder": folder, "title": title})
+	payload = {"updated_at": time.time(), "notes": notes_summary}
+	tmp_path = f"{cache_path}.tmp"
+	with open(tmp_path, "w", encoding="utf-8") as f0:
+		json.dump(payload, f0, ensure_ascii=False)
+	os.replace(tmp_path, cache_path)
+
+
+def _read_notes_cache(cache_path=NOTES_CACHE_PATH):
+	try:
+		with open(cache_path, "r", encoding="utf-8") as f0:
+			payload = json.load(f0)
+	except FileNotFoundError:
+		return [], "Notes cache not ready."
+	except Exception as exc:
+		return [], f"Notes cache read failed: {exc}"
+	if isinstance(payload, dict):
+		notes = payload.get("notes", [])
+	elif isinstance(payload, list):
+		notes = payload
+	else:
+		notes = []
+	return notes, None
+
+
+class NotesCacheWorker(QThread):
+	error = pyqtSignal(str)
+	updated = pyqtSignal(int)
+
+	def __init__(self, cache_path=NOTES_CACHE_PATH, parent=None):
+		super().__init__(parent)
+		self.cache_path = cache_path
+		self._running = True
+
+	def stop(self):
+		self._running = False
+
+	def run(self):
+		while self._running:
+			try:
+				notes = _fetch_notes_snapshot()
+				_write_notes_cache(notes, self.cache_path)
+				self.updated.emit(len(notes))
+			except Exception as exc:
+				self.error.emit(str(exc))
+			interval = self._next_interval_seconds()
+			steps = max(1, int(interval / 0.1))
+			for _ in range(steps):
+				if not self._running:
+					return
+				time.sleep(0.1)
+
+	def _next_interval_seconds(self):
+		try:
+			active_app = NSWorkspace.sharedWorkspace().activeApplication()
+			app_name = active_app.get("NSApplicationName", "")
+		except Exception:
+			app_name = ""
+		if app_name == "Watermelon":
+			return 5
+		return 30
+
+
+class NotesLoader(QThread):
+	finished = pyqtSignal(list)
+	error = pyqtSignal(str)
+
+	def run(self):
+		script = """
+		set AppleScript's text item delimiters to ASCII character 31
+		tell application "Notes"
+			set outList to {}
+			repeat with n in notes
+				set t to name of n
+				set b to body of n
+				set f to "Unfiled"
+				set accountName to ""
+				try
+					set c to container of n
+					set cClass to class of c
+					if cClass is folder then
+						set f to name of c
+						try
+							set accountName to name of container of c
+						end try
+					else if cClass is account then
+						set f to name of c
+					end if
+				on error
+					try
+						set f to name of folder of n
+					end try
+				end try
+				if accountName is not "" then
+					set f to accountName & "/" & f
+				end if
+				set end of outList to f & (ASCII character 29) & t & (ASCII character 30) & b
+			end repeat
+			set outText to outList as string
+		end tell
+		return outText
+		"""
+		try:
+			result = subprocess.run(
+				["osascript", "-e", script],
+				capture_output=True,
+				text=True,
+				check=False,
+			)
+		except Exception as exc:
+			self.error.emit(f"Failed to run osascript: {exc}")
+			return
+
+		if result.returncode != 0:
+			message = result.stderr.strip() or "Unknown AppleScript error."
+			self.error.emit(message)
+			return
+
+		raw = result.stdout.rstrip("\n")
+		notes = []
+		if raw:
+			for item in raw.split(chr(31)):
+				if not item:
+					continue
+				parts = item.split(chr(30), 1)
+				folder_and_title = parts[0]
+				body = parts[1] if len(parts) > 1 else ""
+				folder_parts = folder_and_title.split(chr(29), 1)
+				folder = folder_parts[0].strip() if folder_parts else "Unfiled"
+				title = folder_parts[1].strip() if len(folder_parts) > 1 else folder_and_title.strip()
+				notes.append({"folder": folder, "title": title, "body": body})
+		self.finished.emit(notes)
+
+
+class NotesFolderDialog(QDialog):
+	note_selected = pyqtSignal(object)
+
+	def __init__(self, parent=None):
+		super().__init__(parent)
+		self.setWindowTitle("Select Notes")
+		self.center()
+		self.resize(520, 320)
+		self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
+		self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+		# self._centered_once = False
+
+		self.notes = []
+		self.filtered_notes = []
+		self.folder_ids = []
+		self.active_folder = None
+
+		self.status_label = QLabel("Ready.")
+		self.search_input = QLineEdit()
+		self.search_input.setPlaceholderText("Filter notes by title...")
+		self.search_input.textChanged.connect(self.apply_filter)
+
+		self.folder_list = QListWidget()
+		self.folder_list.currentRowChanged.connect(self.on_folder_changed)
+
+		self.list_widget = QListWidget()
+		self.list_widget.itemDoubleClicked.connect(self.select_current)
+
+		splitter = QSplitter(Qt.Orientation.Horizontal)
+		splitter.addWidget(self.folder_list)
+		splitter.addWidget(self.list_widget)
+		splitter.setStretchFactor(0, 1)
+		splitter.setStretchFactor(1, 2)
+
+		select_btn = QPushButton("Select")
+		select_btn.setFixedSize(100, 20)
+		select_btn.clicked.connect(self.select_current)
+		cancel_btn = QPushButton("Cancel")
+		cancel_btn.setFixedSize(100, 20)
+		cancel_btn.clicked.connect(self.reject)
+
+		btn_row = QHBoxLayout()
+		btn_row.setContentsMargins(0, 0, 0, 0)
+		btn_row.addStretch()
+		btn_row.addWidget(select_btn)
+		btn_row.addWidget(cancel_btn)
+		btn_row.addStretch()
+
+		w3 = QWidget()
+		blay3 = QVBoxLayout()
+		blay3.setContentsMargins(20, 20, 20, 20)
+		blay3.addWidget(self.status_label)
+		blay3.addWidget(self.search_input)
+		blay3.addWidget(splitter)
+		blay3.addLayout(btn_row)
+		w3.setLayout(blay3)
+		w3.setObjectName("Main")
+
+		layout = QVBoxLayout()
+		layout.setContentsMargins(0, 0, 0, 0)
+		layout.addWidget(w3)
+		# layout.addWidget(self.search_input)
+		# layout.addWidget(splitter)
+		# layout.addLayout(btn_row)
+		self.setLayout(layout)
+
+	# def showEvent(self, event):
+	# 	super().showEvent(event)
+	# 	if self._centered_once:
+	# 		return
+	# 	screen = QGuiApplication.screenAt(QCursor.pos())
+	# 	if not screen:
+	# 		if self.parent() and hasattr(self.parent(), "screen"):
+	# 			screen = self.parent().screen()
+	# 		else:
+	# 			screen = QGuiApplication.primaryScreen()
+	# 	if screen:
+	# 		geo = screen.availableGeometry()
+	# 		x = geo.x() + int((geo.width() - self.width()) / 2)
+	# 		y = geo.y() + int((geo.height() - self.height()) / 2)
+	# 		self.move(x, y)
+	# 	self._centered_once = True
+
+	def set_status(self, text):
+		self.status_label.setText(text)
+
+	def set_notes(self, notes):
+		self.notes = notes
+		self.populate_folders()
+		self.apply_filter(self.search_input.text())
+		if notes:
+			self.set_status("Select a note.")
+		else:
+			self.set_status("No notes found.")
+
+	def populate_folders(self):
+		folders = sorted(
+			{
+				(note.get("folder") or "Unfiled").strip() or "Unfiled"
+				for note in self.notes
+			}
+		)
+		self.folder_ids = [None] + folders
+		self.folder_list.blockSignals(True)
+		self.folder_list.clear()
+		self.folder_list.addItem("All Notes")
+		for folder in folders:
+			self.folder_list.addItem(folder)
+		self.folder_list.blockSignals(False)
+		if self.folder_ids:
+			self.folder_list.setCurrentRow(0)
+
+	def on_folder_changed(self, index):
+		if index < 0 or index >= len(self.folder_ids):
+			self.active_folder = None
+		else:
+			self.active_folder = self.folder_ids[index]
+		self.apply_filter(self.search_input.text())
+
+	def apply_filter(self, text):
+		query = text.strip().lower()
+		self.filtered_notes = []
+		for note in self.notes:
+			folder = (note.get("folder") or "Unfiled").strip() or "Unfiled"
+			if self.active_folder and folder != self.active_folder:
+				continue
+			title = note.get("title") or ""
+			if query and query not in title.lower():
+				continue
+			self.filtered_notes.append(note)
+		self.list_widget.clear()
+		for note in self.filtered_notes:
+			title = note.get("title") or "(Untitled)"
+			self.list_widget.addItem(title)
+		if self.filtered_notes:
+			self.list_widget.setCurrentRow(0)
+
+	def select_current(self):
+		index = self.list_widget.currentRow()
+		if index < 0 or index >= len(self.filtered_notes):
+			return
+		note = self.filtered_notes[index]
+		self.note_selected.emit(note)
+		self.accept()
+	
+	def center(self):  # 设置窗口居中
+		self.move(500, 300)
+
 
 class window3(QWidget):  # 主窗口
 	def __init__(self):
@@ -708,6 +1987,27 @@ class window3(QWidget):  # 主窗口
 		SCREEN_HEIGHT = int(self.screen().availableGeometry().height())
 		self.resize(1520, SCREEN_HEIGHT)
 		self.i = 1
+		self.notes_loader = None
+		self.notes_cache_worker = None
+		self.notes_cache_path = NOTES_CACHE_PATH
+		self.notes_data = []
+		self.notes_current_list = []
+		self.notes_folder_dialog = None
+		self.notes_current_folder = None
+		self.notes_current_title = None
+		self.notes_active = False
+		self.notes_dirty = False
+		self.notes_reload_pending = False
+		self.notes_mode_enabled = False
+		self.notes_force_reload = False
+		self.notes_pending_title = None
+		self.notes_pending_folder = None
+		self.notes_wait_dialog = None
+		self.notes_wait_timer = None
+		self.notes_wait_target = None
+		self.notes_wait_start = None
+		self.notes_cache_worker = NotesCacheWorker(self.notes_cache_path, self)
+		self.notes_cache_worker.start()
 
 		home_dir = str(Path.home())
 		tarname1 = "WatermelonAppPath"
@@ -729,6 +2029,7 @@ class window3(QWidget):  # 主窗口
 
 		self.bottom = QTextEdit(self)
 		self.bottom.setFixedWidth(1235)
+		self.bottom.setAcceptRichText(False)
 		self.bottom.textChanged.connect(self.text_change)
 		self.scrollbar = self.bottom.verticalScrollBar()
 		self.scrollbar.valueChanged.connect(self.scrollchanged)
@@ -822,6 +2123,61 @@ The window will float at top all the time as you focus on typing. If you want to
 			namelist.append(pathslist[i].split('||')[0])
 		self.widget0.addItems(namelist)
 
+		# self.btn_mode = QPushButton('Mode: Local', self)
+		# self.btn_mode.clicked.connect(self.toggle_notes_mode)
+		# self.btn_mode.setFixedSize(120, 20)
+
+		self.btn_notes_folder = QPushButton('Notes Folder', self)
+		self.btn_notes_folder.clicked.connect(self.open_notes_folder_dialog)
+		self.btn_notes_folder.setFixedSize(230, 20)
+
+		self.widget_notes = QComboBox(self)
+		self.widget_notes.setFixedWidth(230)
+		self.widget_notes.setEnabled(False)
+		self.widget_notes.currentIndexChanged.connect(self.notes_index_change)
+
+		self.btn_notes_save = QPushButton('Save', self)
+		self.btn_notes_save.clicked.connect(self.save_notes_sync)
+		self.btn_notes_save.setFixedSize(230, 20)
+		self.btn_notes_save.setEnabled(False)
+		self.btn_notes_save.setStyleSheet('''
+				QPushButton:disabled{
+				border: 1px solid #999999;
+				background-color: #E6E6E6;
+				border-radius: 4px;
+				padding: 1px;
+				color: #777777
+				}
+				''')
+
+		self.btn_notes_new = QPushButton('New', self)
+		self.btn_notes_new.clicked.connect(self.new_notes_note)
+		self.btn_notes_new.setFixedSize(230, 20)
+		self.btn_notes_new.setEnabled(False)
+		self.btn_notes_new.setStyleSheet('''
+				QPushButton:disabled{
+				border: 1px solid #999999;
+				background-color: #E6E6E6;
+				border-radius: 4px;
+				padding: 1px;
+				color: #777777
+				}
+				''')
+
+		self.btn_notes_export = QPushButton('Export', self)
+		self.btn_notes_export.clicked.connect(self.export_notes_file)
+		self.btn_notes_export.setFixedSize(230, 20)
+		self.btn_notes_export.setEnabled(False)
+		self.btn_notes_export.setStyleSheet('''
+				QPushButton:disabled{
+				border: 1px solid #999999;
+				background-color: #E6E6E6;
+				border-radius: 4px;
+				padding: 1px;
+				color: #777777
+				}
+				''')
+
 		self.btn_sub3 = QPushButton('Export', self)
 		self.btn_sub3.clicked.connect(self.export_file)
 		self.btn_sub3.setFixedSize(230, 20)
@@ -837,6 +2193,12 @@ The window will float at top all the time as you focus on typing. If you want to
 		hbox1.addWidget(self.btn_sub1)
 		hbox1.addWidget(self.btn_sub2)
 		hbox1.addWidget(self.widget0)
+		# hbox1.addWidget(self.btn_mode)
+		hbox1.addWidget(self.btn_notes_folder)
+		hbox1.addWidget(self.btn_notes_new)
+		hbox1.addWidget(self.widget_notes)
+		hbox1.addWidget(self.btn_notes_export)
+		hbox1.addWidget(self.btn_notes_save)
 		hbox1.addWidget(self.btn_sub3)
 		hbox1.addWidget(self.btn_sub4)
 		hbox1.addStretch()
@@ -880,6 +2242,26 @@ The window will float at top all the time as you focus on typing. If you want to
 				''')
 		self.btn0_1.move(35, SCREEN_HEIGHT - 185)
 
+		self.btn0_2 = QPushButton('', self)
+		self.btn0_2.setFixedSize(25, 25)
+		self.btn0_2.setStyleSheet('''
+				QPushButton{
+				border: transparent;
+				background-color: transparent;
+				border-image: url(/Applications/Watermelon.app/Contents/Resources/repeat.png);
+				}
+				QPushButton:pressed{
+				border: 1px outset grey;
+				background-color: #0085FF;
+				border-radius: 4px;
+				padding: 1px;
+				color: #FFFFFF
+				}
+				''')
+		self.btn0_2.move(1435, SCREEN_HEIGHT - 182)
+
+		self._apply_mode_visibility()
+
 		currentfile = int(codecs.open(fulldir4, 'r', encoding='utf-8').read())
 		try:
 			targetpath = pathslist[currentfile].split('||')[1]
@@ -915,6 +2297,7 @@ The window will float at top all the time as you focus on typing. If you want to
 		self.qw1.raise_()
 		self.btn_00.raise_()
 		self.btn0_1.raise_()
+		self.btn0_2.raise_()
 
 		self.assigntoall()
 
@@ -1024,6 +2407,7 @@ The window will float at top all the time as you focus on typing. If you want to
 		self.btn_00.move(160, screen_height - 35)
 		# 调整设置按钮的位置
 		self.btn0_1.move(35, screen_height - 185)
+		self.btn0_2.move(1435, screen_height - 182)
 
 	def _default_splitter2_ratio(self, screen_height):
 		total = max(screen_height - 100, 1)
@@ -1132,6 +2516,7 @@ The window will float at top all the time as you focus on typing. If you want to
 			self.qw1.setVisible(True)
 			self.l1.setVisible(True)
 			self.btn0_1.setVisible(True)
+			self.btn0_2.setVisible(True)
 			self.setMinimumSize(0, 0)
 			self.setMaximumSize(16777215, 16777215)
 			self.resize(1520, SCREEN_HEIGHT)
@@ -1140,8 +2525,18 @@ The window will float at top all the time as you focus on typing. If you want to
 			x_center = screen_x + int(SCREEN_WEIGHT / 2) - 760
 			y_center = screen_y
 			self.move(screen_x + int(SCREEN_WEIGHT / 2) - 760, screen_y - SCREEN_HEIGHT)
-			self.updatecontent()
+			self.updatecontent_for_mode()
 		if self.i % 2 == 0:  # hide
+			if self.notes_mode_enabled and self.notes_dirty:
+				user_choice = self._confirm_notes_save()
+				if user_choice == "cancel":
+					return
+				if user_choice == "save":
+					self.save_notes_sync()
+					if self.notes_dirty:
+						return
+				if user_choice == "discard":
+					self._set_notes_dirty(False)
 			btna4.setChecked(False)
 			self.btn_00.setFixedHeight(10)
 			self.btn_00.setFixedWidth(100)
@@ -1156,6 +2551,7 @@ The window will float at top all the time as you focus on typing. If you want to
 			self.qw1.setVisible(False)
 			self.l1.setVisible(False)
 			self.btn0_1.setVisible(False)
+			self.btn0_2.setVisible(True)
 			self.setFixedSize(100, 10)
 			# 隐藏时移动到当前屏幕的顶部中央
 			x_center = screen_x + int(SCREEN_WEIGHT / 2) - 50
@@ -1167,6 +2563,75 @@ The window will float at top all the time as you focus on typing. If you want to
 		self.qw1.raise_()
 		self.btn_00.raise_()
 		self.btn0_1.raise_()
+		self.btn0_2.raise_()
+
+	def closeEvent(self, event):
+		self._stop_notes_wait()
+		if self.notes_cache_worker:
+			self.notes_cache_worker.stop()
+			self.notes_cache_worker.wait(2000)
+		event.accept()
+
+	def resizeEvent(self, event):
+		super().resizeEvent(event)
+		if not DEBUG_LAYOUT:
+			return
+		try:
+			old_size = event.oldSize()
+			new_size = event.size()
+			spontaneous = int(event.spontaneous())
+			line = (
+				f"{time.time():.3f} resize "
+				f"old={old_size.width()}x{old_size.height()} "
+				f"new={new_size.width()}x{new_size.height()} "
+				f"spontaneous={spontaneous} "
+				f"notes_mode={int(self.notes_mode_enabled)}\n"
+			)
+			with open(os.path.join(BasePath, "layout_debug.log"), "a", encoding="utf-8") as f0:
+				f0.write(line)
+			if self.qw0.isVisible() and new_size.width() not in (100, 1520):
+				stack = "".join(traceback.format_stack(limit=12))
+				with open(os.path.join(BasePath, "layout_debug.log"), "a", encoding="utf-8") as f0:
+					f0.write(f"{time.time():.3f} resize_stack\n{stack}\n")
+		except Exception:
+			pass
+
+	def updatecontent_for_mode(self):
+		if self.notes_mode_enabled:
+			self.reload_notes_on_show()
+			if self.notes_loader and self.notes_loader.isRunning():
+				return
+			if self.notes_reload_pending:
+				return
+			current_index = self.widget_notes.currentIndex()
+			if 0 <= current_index < len(self.notes_current_list):
+				self.notes_index_change(current_index)
+			else:
+				self.bottom.blockSignals(True)
+				self.bottom.clear()
+				self.bottom.blockSignals(False)
+				self.topleft.clear()
+				self.topright.clear()
+			return
+		self._set_notes_active(False)
+		self.updatecontent()
+
+	def _confirm_notes_save(self):
+		box = QMessageBox(self)
+		box.setWindowTitle("Unsaved Notes")
+		box.setText("Save changes to this note?")
+		box.setStandardButtons(
+			QMessageBox.StandardButton.Save
+			| QMessageBox.StandardButton.Discard
+			| QMessageBox.StandardButton.Cancel
+		)
+		box.setDefaultButton(QMessageBox.StandardButton.Save)
+		result = box.exec()
+		if result == QMessageBox.StandardButton.Save:
+			return "save"
+		if result == QMessageBox.StandardButton.Discard:
+			return "discard"
+		return "cancel"
 
 	def updatecontent(self):
 		# set text
@@ -1237,6 +2702,18 @@ The window will float at top all the time as you focus on typing. If you want to
 			self._splitter2_user_set = True
 
 	def text_change(self):
+		if self.notes_active:
+			self._set_notes_dirty(True)
+			previewtext = self.bottom.toPlainText()
+			if self.topleftshow == 1:
+				endhtml = self.md2html(previewtext)
+				self.topleft.setHtml(endhtml)
+			if self.toprightshow == 1:
+				endbio = self.addb2(previewtext.replace('*', ''))
+				endhtmlbio = self.md2html(endbio)
+				self.topright.setHtml(endhtmlbio)
+			QTimer.singleShot(100, self.scrollchanged)
+			return
 		if self.bottom.toPlainText() != '':
 			# set text
 			home_dir = str(Path.home())
@@ -1390,6 +2867,7 @@ The window will float at top all the time as you focus on typing. If you want to
 			f0.write(str(self.widget0.currentIndex()))
 
 	def index_change(self, i):
+		self._set_notes_active(False)
 		self.bottom.clear()
 		self.topleft.clear()
 		self.topright.clear()
@@ -1429,6 +2907,709 @@ The window will float at top all the time as you focus on typing. If you want to
 		endhtmlbio = self.md2html(endbio)
 		self.topright.setHtml(endhtmlbio)
 
+	def _set_notes_dirty(self, dirty):
+		self.notes_dirty = bool(dirty)
+		if self.notes_dirty:
+			self.btn_notes_save.setStyleSheet('''
+				QPushButton{
+				border: 1px outset grey;
+				background-color: #FF4D4D;
+				border-radius: 4px;
+				padding: 1px;
+				color: #FFFFFF
+				}
+				QPushButton:pressed{
+				border: 1px outset grey;
+				background-color: #CC3D3D;
+				border-radius: 4px;
+				padding: 1px;
+				color: #FFFFFF
+				}
+				QPushButton:disabled{
+				border: 1px solid #999999;
+				background-color: #E6E6E6;
+				border-radius: 4px;
+				padding: 1px;
+				color: #777777
+				}
+				''')
+		else:
+			self.btn_notes_save.setStyleSheet('''
+				QPushButton:disabled{
+				border: 1px solid #999999;
+				background-color: #E6E6E6;
+				border-radius: 4px;
+				padding: 1px;
+				color: #777777
+				}
+				''')
+
+	def _set_notes_active(self, active):
+		self.notes_active = bool(active)
+		self.btn_notes_save.setEnabled(self.notes_active)
+		if not self.notes_active:
+			self._set_notes_dirty(False)
+
+	def _set_notes_new_enabled(self, enabled):
+		self.btn_notes_new.setEnabled(bool(enabled))
+
+	def _set_notes_export_enabled(self, enabled):
+		self.btn_notes_export.setEnabled(bool(enabled))
+
+	def _enforce_window_width(self):
+		if not self.qw0.isVisible():
+			return
+		if self.width() == 1520:
+			return
+		screen_geom = self._current_window_screen_geometry()
+		self._apply_screen_geometry(screen_geom)
+
+	def _log_layout_state(self, tag):
+		if not DEBUG_LAYOUT:
+			return
+		try:
+			qw0_geo = self.qw0.geometry()
+			qw1_geo = self.qw1.geometry()
+			splitter2_geo = self.splitter2.geometry()
+			splitter1_geo = self.splitter1.geometry()
+			l1_geo = self.l1.geometry()
+			main_geo = self.geometry()
+			main_hint = self.sizeHint()
+			qw0_hint = self.qw0.sizeHint()
+			qw1_hint = self.qw1.sizeHint()
+			splitter2_hint = self.splitter2.sizeHint()
+			splitter1_hint = self.splitter1.sizeHint()
+			main_min = self.minimumSize()
+			main_max = self.maximumSize()
+			layout_hint = self.layout().sizeHint() if self.layout() else QSize(0, 0)
+			layout_min = self.layout().minimumSize() if self.layout() else QSize(0, 0)
+			try:
+				left_doc_w = float(self.topleft.document().size().width())
+				right_doc_w = float(self.topright.document().size().width())
+			except Exception:
+				left_doc_w = -1.0
+				right_doc_w = -1.0
+			line = (
+				f"{time.time():.3f} {tag} "
+				f"main={main_geo.getRect()} "
+				f"main_hint={main_hint.width()}x{main_hint.height()} "
+				f"main_min={main_min.width()}x{main_min.height()} "
+				f"main_max={main_max.width()}x{main_max.height()} "
+				f"layout_hint={layout_hint.width()}x{layout_hint.height()} "
+				f"layout_min={layout_min.width()}x{layout_min.height()} "
+				f"qw0={qw0_geo.getRect()} qw1={qw1_geo.getRect()} "
+				f"qw0_hint={qw0_hint.width()}x{qw0_hint.height()} "
+				f"qw1_hint={qw1_hint.width()}x{qw1_hint.height()} "
+				f"splitter2={splitter2_geo.getRect()} splitter1={splitter1_geo.getRect()} "
+				f"splitter2_hint={splitter2_hint.width()}x{splitter2_hint.height()} "
+				f"splitter1_hint={splitter1_hint.width()}x{splitter1_hint.height()} "
+				f"l1={l1_geo.getRect()} "
+				f"doc_w={left_doc_w:.1f}/{right_doc_w:.1f} "
+				f"notes_mode={int(self.notes_mode_enabled)} "
+				f"local_visible={int(self.btn_sub1.isVisible())} "
+				f"notes_visible={int(self.btn_notes_folder.isVisible())}\n"
+			)
+			with open(os.path.join(BasePath, "layout_debug.log"), "a", encoding="utf-8") as f0:
+				f0.write(line)
+		except Exception:
+			pass
+
+	def _apply_mode_visibility(self):
+		self.qw1.setUpdatesEnabled(False)
+		if self.notes_mode_enabled:
+			for widget in (self.btn_sub1, self.btn_sub2, self.widget0, self.btn_sub3, self.btn_sub4):
+				widget.setVisible(False)
+			for widget in (self.btn_notes_folder, self.widget_notes, self.btn_notes_save, self.btn_notes_new, self.btn_notes_export):
+				widget.setVisible(True)
+		else:
+			for widget in (self.btn_notes_folder, self.widget_notes, self.btn_notes_save, self.btn_notes_new, self.btn_notes_export):
+				widget.setVisible(False)
+			for widget in (self.btn_sub1, self.btn_sub2, self.widget0, self.btn_sub3, self.btn_sub4):
+				widget.setVisible(True)
+		self.qw1.setUpdatesEnabled(True)
+		self.qw1.updateGeometry()
+
+	def _apply_notes_folder(self, folder, note_title=None):
+		self.notes_current_folder = folder
+		self._set_notes_new_enabled(bool(folder))
+		self._set_notes_export_enabled(bool(folder))
+		self.notes_current_list = []
+		for note in self.notes_data:
+			note_folder = (note.get("folder") or "Unfiled").strip() or "Unfiled"
+			if note_folder == folder:
+				self.notes_current_list.append(note)
+		self.widget_notes.blockSignals(True)
+		self.widget_notes.clear()
+		for note in self.notes_current_list:
+			title = note.get("title") or "(Untitled)"
+			self.widget_notes.addItem(title, note)
+		self.widget_notes.blockSignals(False)
+		if self.notes_current_list:
+			self.widget_notes.setEnabled(True)
+			target_index = 0
+			if note_title:
+				for idx, note in enumerate(self.notes_current_list):
+					title = note.get("title") or "(Untitled)"
+					if title == note_title:
+						target_index = idx
+						break
+			self.widget_notes.setCurrentIndex(target_index)
+		else:
+			self.widget_notes.setEnabled(False)
+			self._set_notes_active(False)
+			self.notes_force_reload = False
+			self.bottom.blockSignals(True)
+			self.bottom.clear()
+			self.bottom.blockSignals(False)
+			self.topleft.clear()
+			self.topright.clear()
+
+	def _note_in_cache(self, notes, folder, title):
+		for note in notes:
+			note_folder = (note.get("folder") or "Unfiled").strip() or "Unfiled"
+			note_title = note.get("title") or "(Untitled)"
+			if note_title == title and note_folder == folder:
+				return True
+		return False
+
+	def _start_notes_wait(self, folder, title):
+		self.notes_wait_target = (folder, title)
+		self.notes_wait_start = time.time()
+		if not self.notes_wait_dialog:
+			self.notes_wait_dialog = QDialog(self)
+			self.notes_wait_dialog.setWindowTitle("Updating Notes")
+			self.notes_wait_dialog.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
+			self.notes_wait_dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+			self.notes_wait_dialog.destroyed.connect(self._notes_wait_dialog_destroyed)
+			label = QLabel("Updating Notes, please wait...")
+			layout = QVBoxLayout()
+			layout.addWidget(label)
+			self.notes_wait_dialog.setLayout(layout)
+			self.notes_wait_dialog.setFixedSize(260, 90)
+		self.notes_wait_dialog.show()
+		if not self.notes_wait_timer:
+			self.notes_wait_timer = QTimer(self)
+			self.notes_wait_timer.setInterval(1000)
+			self.notes_wait_timer.timeout.connect(self._check_notes_cache_for_wait)
+		self.notes_wait_timer.start()
+
+	def _stop_notes_wait(self):
+		if self.notes_wait_timer:
+			self.notes_wait_timer.stop()
+		if self.notes_wait_dialog:
+			self.notes_wait_dialog.close()
+			self.notes_wait_dialog = None
+		self.notes_wait_target = None
+		self.notes_wait_start = None
+
+	def _notes_wait_dialog_destroyed(self, _obj=None):
+		if self.notes_wait_timer:
+			self.notes_wait_timer.stop()
+		self.notes_wait_dialog = None
+		self.notes_wait_target = None
+		self.notes_wait_start = None
+
+	def _check_notes_cache_for_wait(self):
+		if not self.notes_wait_target:
+			self._stop_notes_wait()
+			return
+		if self.notes_wait_start and (time.time() - self.notes_wait_start) > 30:
+			self._stop_notes_wait()
+			return
+		folder, title = self.notes_wait_target
+		notes, error = _read_notes_cache(self.notes_cache_path)
+		if error:
+			return
+		if self._note_in_cache(notes, folder, title):
+			self._stop_notes_wait()
+			self.notes_pending_title = title
+			self.notes_pending_folder = folder
+			self.notes_reload_pending = True
+			self.notes_force_reload = True
+			self.on_notes_loaded(notes)
+
+	def _read_note_html(self, folder, title):
+		script = r'''
+		on run argv
+			set targetFolder to item 1 of argv
+			set targetTitle to item 2 of argv
+			tell application "Notes"
+				set targetNote to missing value
+				repeat with n in notes
+					set t to name of n
+					if t is equal to targetTitle then
+						set f to "Unfiled"
+						set accountName to ""
+						try
+							set c to container of n
+							set cClass to class of c
+							if cClass is folder then
+								set f to name of c
+								try
+									set accountName to name of container of c
+								end try
+							else if cClass is account then
+								set f to name of c
+							end if
+						on error
+							try
+								set f to name of folder of n
+							end try
+						end try
+						if accountName is not "" then
+							set f to accountName & "/" & f
+						end if
+						if targetFolder is "" then
+							set targetNote to n
+							exit repeat
+						end if
+						if f is equal to targetFolder then
+							set targetNote to n
+							exit repeat
+						end if
+					end if
+				end repeat
+				if targetNote is missing value then
+					return ""
+				end if
+				return body of targetNote
+			end tell
+		end run
+		'''
+		try:
+			result = subprocess.check_output(["osascript", "-e", script, folder, title], text=True)
+		except Exception:
+			return ""
+		return result
+
+	def reload_notes_on_show(self):
+		if not self.notes_mode_enabled:
+			return
+		if not self.notes_current_folder and not self.notes_folder_dialog:
+			return
+		self.notes_reload_pending = True
+		self.notes_force_reload = True
+		self.load_notes()
+
+	def toggle_notes_mode(self):
+		self._log_layout_state("toggle_before")
+		self.notes_mode_enabled = not self.notes_mode_enabled
+		if self.notes_mode_enabled:
+			# self.btn_mode.setText('Mode: Notes')
+			self.btn0_2.setStyleSheet('''
+				QPushButton{
+				border: transparent;
+				background-color: transparent;
+				border-image: url(/Applications/Watermelon.app/Contents/Resources/repeat2.png);
+				}
+				QPushButton:pressed{
+				border: 1px outset grey;
+				background-color: #0085FF;
+				border-radius: 4px;
+				padding: 1px;
+				color: #FFFFFF
+				}
+				''')
+		else:
+			# self.btn_mode.setText('Mode: Local')
+			self.btn0_2.setStyleSheet('''
+				QPushButton{
+				border: transparent;
+				background-color: transparent;
+				border-image: url(/Applications/Watermelon.app/Contents/Resources/repeat.png);
+				}
+				QPushButton:pressed{
+				border: 1px outset grey;
+				background-color: #0085FF;
+				border-radius: 4px;
+				padding: 1px;
+				color: #FFFFFF
+				}
+			''')
+			self._set_notes_active(False)
+		self._apply_mode_visibility()
+		self.updatecontent_for_mode()
+		QTimer.singleShot(50, lambda: self._log_layout_state("toggle_after"))
+
+	def open_notes_folder_dialog(self):
+		if self.notes_folder_dialog:
+			self.notes_folder_dialog.raise_()
+			self.notes_folder_dialog.activateWindow()
+			self.notes_folder_dialog.show()
+			self.load_notes()
+			return
+		self.notes_folder_dialog = NotesFolderDialog(self)
+		self.notes_folder_dialog.note_selected.connect(self.on_notes_note_selected)
+		self.notes_folder_dialog.destroyed.connect(self._clear_notes_folder_dialog)
+		self.notes_folder_dialog.show()
+		self.notes_folder_dialog.raise_()
+		self.notes_folder_dialog.activateWindow()
+		self.load_notes()
+
+	def load_notes(self):
+		notes, error = _read_notes_cache(self.notes_cache_path)
+		if error:
+			self.on_notes_error(error)
+			return
+		self.on_notes_loaded(notes)
+
+	def _clear_notes_folder_dialog(self, _obj=None):
+		self.notes_folder_dialog = None
+
+	def on_notes_loaded(self, notes):
+		self.notes_data = notes
+		if self.notes_folder_dialog:
+			self.notes_folder_dialog.set_notes(self.notes_data)
+		if self.notes_reload_pending:
+			self.notes_reload_pending = False
+			if self._select_notes_after_reload():
+				return
+		self.notes_current_folder = None
+		self.notes_current_title = None
+		self.notes_current_list = []
+		self._set_notes_new_enabled(False)
+		self._set_notes_export_enabled(False)
+		self.widget_notes.blockSignals(True)
+		self.widget_notes.clear()
+		self.widget_notes.blockSignals(False)
+		self.widget_notes.setEnabled(False)
+		self._set_notes_active(False)
+
+	def _select_notes_after_reload(self):
+		if not self.notes_data:
+			return False
+		target_title = self.notes_current_title or self.notes_pending_title
+		target_folder = self.notes_current_folder or self.notes_pending_folder
+		if target_title:
+			best_note = None
+			for note in self.notes_data:
+				title = note.get("title") or "(Untitled)"
+				folder = (note.get("folder") or "Unfiled").strip() or "Unfiled"
+				if title == target_title:
+					if target_folder and folder != target_folder:
+						continue
+					best_note = note
+					break
+			if not best_note:
+				for note in self.notes_data:
+					title = note.get("title") or "(Untitled)"
+					if title == target_title:
+						best_note = note
+						break
+			if best_note:
+				note_folder = (best_note.get("folder") or "Unfiled").strip() or "Unfiled"
+				note_title = best_note.get("title") or "(Untitled)"
+				self.notes_pending_title = None
+				self.notes_pending_folder = None
+				self._select_note_by_folder_title(note_folder, note_title, force_reload=True)
+				return True
+		if self.notes_current_folder:
+			current_title = self.notes_current_title
+			self._select_note_by_folder_title(self.notes_current_folder, current_title, force_reload=True)
+			return True
+		return False
+
+	def on_notes_error(self, message):
+		self.notes_data = []
+		self.notes_current_folder = None
+		self.notes_current_title = None
+		self.notes_current_list = []
+		self.notes_reload_pending = False
+		self.notes_force_reload = False
+		self.notes_pending_title = None
+		self.notes_pending_folder = None
+		self._set_notes_new_enabled(False)
+		self._set_notes_export_enabled(False)
+		self.widget_notes.blockSignals(True)
+		self.widget_notes.clear()
+		self.widget_notes.blockSignals(False)
+		self.widget_notes.setEnabled(False)
+		self._set_notes_active(False)
+		if self.notes_folder_dialog:
+			self.notes_folder_dialog.set_notes([])
+			self.notes_folder_dialog.set_status(message)
+
+	def on_notes_folder_selected(self, folder):
+		self.notes_current_title = None
+		self._apply_notes_folder(folder)
+		if self.notes_mode_enabled:
+			current_index = self.widget_notes.currentIndex()
+			if 0 <= current_index < len(self.notes_current_list):
+				self.notes_index_change(current_index)
+			else:
+				self.bottom.blockSignals(True)
+				self.bottom.clear()
+				self.bottom.blockSignals(False)
+				self.topleft.clear()
+				self.topright.clear()
+
+	def on_notes_note_selected(self, note):
+		folder = (note.get("folder") or "Unfiled").strip() or "Unfiled"
+		title = note.get("title") or "(Untitled)"
+		self._select_note_by_folder_title(folder, title, force_reload=True)
+
+	def _select_note_by_folder_title(self, folder, title, force_reload=False):
+		self.notes_current_folder = folder
+		self.notes_current_title = title
+		self._apply_notes_folder(folder, note_title=title)
+		if self.notes_mode_enabled:
+			current_index = self.widget_notes.currentIndex()
+			if force_reload:
+				self.notes_force_reload = True
+			if 0 <= current_index < self.widget_notes.count():
+				self.notes_index_change(current_index)
+			else:
+				self.bottom.blockSignals(True)
+				self.bottom.clear()
+				self.bottom.blockSignals(False)
+				self.topleft.clear()
+				self.topright.clear()
+
+	def new_notes_note(self):
+		if not self.notes_mode_enabled:
+			return
+		folder = self.notes_current_folder or ""
+		now_str = datetime.now().strftime('%Y-%m-%d %H%M%S')
+		title = f"Note {now_str}"
+		note_md = ""
+		note_html = markdown_to_html(note_md)
+		note_html = embed_markdown(note_html, note_md)
+		try:
+			created_folder = self._create_note_in_folder(folder, title, note_html)
+		except Exception:
+			return
+		if created_folder:
+			folder = created_folder
+		elif not folder:
+			folder = "Unfiled"
+		self.notes_current_folder = folder or None
+		self.notes_current_title = title
+		self.notes_pending_title = title
+		self.notes_pending_folder = self.notes_current_folder
+		new_note = {"folder": folder, "title": title, "body": note_html}
+		self.notes_data.insert(0, new_note)
+		try:
+			_write_notes_cache(self.notes_data, self.notes_cache_path)
+		except Exception:
+			pass
+		if folder:
+			self._select_note_by_folder_title(folder, title, force_reload=True)
+		notes, error = _read_notes_cache(self.notes_cache_path)
+		if not error and self._note_in_cache(notes, folder, title):
+			self.notes_reload_pending = True
+			self.notes_force_reload = True
+			self.on_notes_loaded(notes)
+		else:
+			self._start_notes_wait(folder, title)
+
+	def _create_note_in_folder(self, folder, title, html):
+		with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False, suffix=".html") as f0:
+			f0.write(html)
+			path = f0.name
+		script = r'''
+		on run argv
+			set targetFolder to item 1 of argv
+			set targetTitle to item 2 of argv
+			set filePath to item 3 of argv
+			set newHTML to (do shell script "cat " & quoted form of filePath)
+			tell application "Notes"
+				if targetFolder is "" or targetFolder is "Unfiled" then
+					set theNote to make new note with properties {name:targetTitle, body:newHTML}
+				else if targetFolder contains "/" then
+					set AppleScript's text item delimiters to "/"
+					set parts to text items of targetFolder
+					set acctName to item 1 of parts
+					set folderName to ""
+					if (count of parts) > 1 then
+						set folderName to item 2 of parts
+					end if
+					set theAcct to account acctName
+					if folderName is "" then
+						set theNote to make new note at theAcct with properties {name:targetTitle, body:newHTML}
+					else
+						set theNote to make new note at folder folderName of theAcct with properties {name:targetTitle, body:newHTML}
+					end if
+				else
+					set theFolder to missing value
+					repeat with a in accounts
+						if exists folder targetFolder of a then
+							set theFolder to folder targetFolder of a
+							exit repeat
+						end if
+					end repeat
+					if theFolder is missing value then
+						set theNote to make new note with properties {name:targetTitle, body:newHTML}
+					else
+						set theNote to make new note at theFolder with properties {name:targetTitle, body:newHTML}
+					end if
+				end if
+				set f to "Unfiled"
+				set accountName to ""
+				try
+					set c to container of theNote
+					set cClass to class of c
+					if cClass is folder then
+						set f to name of c
+						try
+							set accountName to name of container of c
+						end try
+					else if cClass is account then
+						set f to name of c
+					end if
+				on error
+					try
+						set f to name of folder of theNote
+					end try
+				end try
+				if accountName is not "" then
+					set f to accountName & "/" & f
+				end if
+				return f
+			end tell
+		end run
+		'''
+		result = subprocess.check_output(["osascript", "-e", script, folder, title, path], text=True)
+		return result.strip()
+
+	def export_notes_file(self):
+		home_dir = str(Path.home())
+		fj = QFileDialog.getExistingDirectory(self, 'Open', home_dir)
+		if fj != '':
+			title = self.widget_notes.currentText().strip() or "Note"
+			text_1 = self.bottom.toPlainText()
+			tarname = title + ".md"
+			fulldir = os.path.join(fj, tarname)
+			with open(fulldir, 'w', encoding='utf-8') as f1:
+				f1.write(text_1)
+
+			text_2 = self.bottom.toPlainText()
+			endbio = self.addb2(text_2.replace('*', ''))
+			tarname2 = title + "_bionic.md"
+			fulldirw = os.path.join(fj, tarname2)
+			with open(fulldirw, 'w', encoding='utf-8') as f1:
+				f1.write(endbio)
+
+	def notes_index_change(self, index):
+		if index < 0:
+			return
+		note = self.widget_notes.itemData(index)
+		if not note:
+			if index >= len(self.notes_current_list):
+				return
+			note = self.notes_current_list[index]
+		note_html = note.get("body")
+		folder = (note.get("folder") or "Unfiled").strip() or "Unfiled"
+		title = note.get("title") or "(Untitled)"
+		if self.notes_force_reload or not note_html:
+			note_html = self._read_note_html(folder, title)
+			if note_html is None:
+				note_html = ""
+			note["body"] = note_html
+		note_key = f"{folder}/{title}"
+		if self.notes_force_reload:
+			note_md = notes_html_to_markdown(note_html, cache_key=note_key, force_html=True)
+			delete_cache_file(note_key)
+			self.notes_force_reload = False
+		else:
+			note_md = notes_html_to_markdown(note_html, cache_key=note_key)
+		self._set_notes_active(True)
+		self.notes_current_title = title
+		self.bottom.blockSignals(True)
+		self.bottom.setPlainText(note_md)
+		self.bottom.blockSignals(False)
+		if not note_md:
+			self.topleft.clear()
+			self.topright.clear()
+			self._set_notes_dirty(False)
+			return
+		rendered_html = markdown_to_html(note_md)
+		if self.topleftshow == 1:
+			self.topleft.setHtml(self.md2html("", pre_rendered_html=rendered_html))
+		if self.toprightshow == 1:
+			bio_text = self.addb2(note_md.replace('*', ''))
+			bio_html = markdown_to_html(bio_text)
+			self.topright.setHtml(self.md2html("", pre_rendered_html=bio_html))
+		self._set_notes_dirty(False)
+
+	def save_notes_sync(self):
+		if not self.notes_active:
+			return
+		current_index = self.widget_notes.currentIndex()
+		if current_index < 0:
+			return
+		note = self.widget_notes.itemData(current_index)
+		if not note:
+			if current_index >= len(self.notes_current_list):
+				return
+			note = self.notes_current_list[current_index]
+		folder = (note.get("folder") or "Unfiled").strip() or "Unfiled"
+		title = note.get("title") or "(Untitled)"
+		note_md = self.bottom.toPlainText()
+		note_html = markdown_to_html(note_md)
+		note_html = embed_markdown(note_html, note_md)
+		try:
+			self._write_note_html(folder, title, note_html)
+		except Exception:
+			self._set_notes_dirty(True)
+			return
+		note_key = f"{folder}/{title}"
+		delete_cache_file(note_key)
+		note["body"] = note_html
+		try:
+			_write_notes_cache(self.notes_data, self.notes_cache_path)
+		except Exception:
+			pass
+		self._set_notes_dirty(False)
+
+	def _write_note_html(self, folder, title, html):
+		with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False, suffix=".html") as f0:
+			f0.write(html)
+			path = f0.name
+		script = r'''
+		on run argv
+			set targetFolder to item 1 of argv
+			set targetTitle to item 2 of argv
+			set filePath to item 3 of argv
+			set newHTML to (do shell script "cat " & quoted form of filePath)
+			tell application "Notes"
+				set targetNote to missing value
+				repeat with n in notes
+					set t to name of n
+					if t is equal to targetTitle then
+						set f to "Unfiled"
+						set accountName to ""
+						try
+							set c to container of n
+							set cClass to class of c
+							if cClass is folder then
+								set f to name of c
+								try
+									set accountName to name of container of c
+								end try
+							else if cClass is account then
+								set f to name of c
+							end if
+						on error
+							try
+								set f to name of folder of n
+							end try
+						end try
+						if accountName is not "" then
+							set f to accountName & "/" & f
+						end if
+						if f is equal to targetFolder then
+							set targetNote to n
+							exit repeat
+						end if
+					end if
+				end repeat
+				if targetNote is missing value then error "NOT_FOUND"
+				set body of targetNote to newHTML
+			end tell
+		end run
+		'''
+		subprocess.check_call(["osascript", "-e", script, folder, title, path])
+
 	def export_file(self):
 		home_dir = str(Path.home())
 		fj = QFileDialog.getExistingDirectory(self, 'Open', home_dir)
@@ -1447,6 +3628,7 @@ The window will float at top all the time as you focus on typing. If you want to
 				f1.write(endbio)
 
 	def clear_all(self):
+		self._set_notes_active(False)
 		w3.widget0.currentIndexChanged.disconnect(w3.index_change)
 		w3.bottom.textChanged.disconnect(w3.text_change)
 
@@ -1920,7 +4102,7 @@ The window will float at top all the time as you focus on typing. If you want to
 			p = subprocess.Popen(['pbcopy', 'w'], stdin=subprocess.PIPE, env=env)
 			p.communicate(input=ResultEnd.encode('utf-8'))
 
-	def md2html(self, mdstr):
+	def md2html(self, mdstr, pre_rendered_html=None):
 		extras = ['code-friendly', 'fenced-code-blocks', 'footnotes', 'tables', 'code-color', 'pyshell', 'nofollow',
 				  'cuddled-lists', 'header ids', 'nofollow']
 
@@ -2026,7 +4208,10 @@ The window will float at top all the time as you focus on typing. If you want to
 	    </body>
 	    </html>
 	    """
-		ret = markdown2.markdown(mdstr, extras=extras)
+		if pre_rendered_html is None:
+			ret = markdown2.markdown(mdstr, extras=extras)
+		else:
+			ret = pre_rendered_html
 		return html % ret
 
 class window4(QWidget):  # Customization settings
@@ -2432,6 +4617,10 @@ style_sheet_ori = '''
         color: #000000;
         font: 14pt Times New Roman;
 }
+	QMessageBox QPushButton {
+		min-width: 100px;
+		height: 20px;
+}
 '''
 
 
@@ -2453,5 +4642,6 @@ if __name__ == '__main__':
 	action7.triggered.connect(w3.open_file_menu)
 	btna4.triggered.connect(w3.pin_a_tab)
 	w3.btn0_1.clicked.connect(w4.activate)
+	w3.btn0_2.clicked.connect(w3.toggle_notes_mode)
 	app.setStyleSheet(style_sheet_ori)
 	app.exec()
