@@ -40,6 +40,8 @@ Toggle on or off with one click!
 
 Free.
 
+p.s.: The app now is fully free, but whether I keep it free in the future depends on my future economic condition. It has been free for the past few years and I don't know about my future. Maybe it will become a paid app one day, but I will keep it free as long as I can. Thanks for your support!
+
 ## 下载安装
 
 ## 使用说明
