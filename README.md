@@ -80,6 +80,12 @@ def hello_world():
     print("Hello, Markdown!")
     return True
 ```
+### 另：LaTeX 公式在普通模式下可支持转译（Apple Notes 无法渲染）
+
+行内公式：$a^2+b^2=c^2$
+
+独立公式：$$\int_0^1 x^2 dx$$
+
 ### 三视图编辑
 
 **Watermelon Typewriter**: The left top is realtime Markdown, the toplight is bionic reading Markdown. You can change the size by drag and drop.
