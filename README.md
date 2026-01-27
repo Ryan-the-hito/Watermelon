@@ -10,7 +10,7 @@ Add bionic reading to day-to-day typing and reading experience.
 
 ## 功能亮点
 
-### Apple Notes 同步样式
+### Apple Notes 同步联通
 
 ```
 # 目前支持的 Markdown 样式
@@ -62,7 +62,16 @@ Add bionic reading to day-to-day typing and reading experience.
 2. 第二步
 3. 第三步
 
-## 3. 代码块 (Code Blocks)
+## 3. 表格
+
+| 功能名称 | 状态 | 耗时 |
+| :---: | :---: | :---: |
+| 数据导入 | ✅ 完成 | 50 ms |
+| 数据处理 | 🔄 进行中 | 1200 ms |
+| 结果导出 | ❌ 失败 | 0 ms |
+```
+
+### 另：代码块 (Code Blocks)也可正常转译
 
 **Python 示例:**
 
@@ -71,15 +80,7 @@ def hello_world():
     print("Hello, Markdown!")
     return True
 ```
-
-## 4. 表格
-
-| 功能名称 | 状态 | 耗时 |
-| :---: | :---: | :---: |
-| 数据导入 | ✅ 完成 | 50 ms |
-| 数据处理 | 🔄 进行中 | 1200 ms |
-| 结果导出 | ❌ 失败 | 0 ms |
-```
+### 三视图编辑
 
 **Watermelon Typewriter**: The left top is realtime Markdown, the toplight is bionic reading Markdown. You can change the size by drag and drop.
 
