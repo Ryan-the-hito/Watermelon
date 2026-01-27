@@ -86,6 +86,8 @@ def hello_world():
 
 独立公式：$$\int_0^1 x^2 dx$$
 
+<img width="374" height="190" alt="CleanShot 2026-01-28 at 01 33 01@2x" src="https://github.com/user-attachments/assets/72fc39c9-a4c3-40ca-904e-05b9dd87d9a8" />
+
 ### 三视图编辑
 
 **Watermelon Typewriter**: The left top is realtime Markdown, the toplight is bionic reading Markdown. You can change the size by drag and drop.
