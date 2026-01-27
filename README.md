@@ -12,6 +12,8 @@ Add bionic reading to day-to-day typing and reading experience.
 
 ### Apple Notes 同步联通
 
+<img width="1212" height="1730" alt="CleanShot 2026-01-28 at 01 35 55@2x" src="https://github.com/user-attachments/assets/31318e09-d8ab-4740-b690-15f21a5a34a7" />
+
 ```
 # 目前支持的 Markdown 样式
 # 一级标题 (H1)
@@ -62,7 +64,7 @@ Add bionic reading to day-to-day typing and reading experience.
 2. 第二步
 3. 第三步
 
-## 3. 表格
+## 3. 表格（只支持所有栏目居中显示）
 
 | 功能名称 | 状态 | 耗时 |
 | :---: | :---: | :---: |
