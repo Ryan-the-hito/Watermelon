@@ -11,15 +11,16 @@ import json
 import html as html_lib
 import tempfile
 import traceback
-import uuid
 from PyQt6.QtWidgets import (QWidget, QPushButton, QApplication,
 							 QLabel, QHBoxLayout, QVBoxLayout,
 							 QSystemTrayIcon, QMenu, QComboBox, QDialog,
 							 QMenuBar, QFileDialog, QMessageBox, QLineEdit,
-							 QSplitter, QTextEdit, QListWidget, QCheckBox, QSlider)
+							 QSplitter, QTextEdit, QListWidget, QCheckBox, QSlider,
+							 QFrame)
 from PyQt6.QtCore import Qt, QPropertyAnimation, QRect, QTimer, QThread, pyqtSignal, QSize
 from PyQt6.QtGui import QAction, QIcon, QColor, QFontDatabase, QPixmap, QCursor, QGuiApplication
 import PyQt6.QtGui
+from PyQt6.QtWebEngineWidgets import QWebEngineView
 import sys
 import webbrowser
 import jieba
@@ -27,7 +28,7 @@ import re
 import urllib3
 import logging
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString, Tag
 import html2text
 import subprocess
 import os
@@ -148,7 +149,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg2.setLayout(blay2)
 
 		widg3 = QWidget()
-		lbl1 = QLabel('Version 2.2.0', self)
+		lbl1 = QLabel('Version 2.2.1', self)
 		blay3 = QHBoxLayout()
 		blay3.setContentsMargins(0, 0, 0, 0)
 		blay3.addStretch()
@@ -254,7 +255,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg9.setLayout(blay9)
 
 		widg10 = QWidget()
-		lbl6 = QLabel('© 2022-2023 Ryan-the-hito. All rights reserved.', self)
+		lbl6 = QLabel('© 2022 Ryan-the-hito. All rights reserved.', self)
 		blay10 = QHBoxLayout()
 		blay10.setContentsMargins(0, 0, 0, 0)
 		blay10.addStretch()
@@ -611,7 +612,7 @@ class window_update(QWidget):  # 增加更新页面（Check for Updates）
 
 	def initUI(self):  # 说明页面内信息
 
-		self.lbl = QLabel('Current Version: v2.2.0', self)
+		self.lbl = QLabel('Current Version: v2.2.1', self)
 		self.lbl.move(30, 45)
 
 		lbl0 = QLabel('Download Update:', self)
@@ -729,8 +730,8 @@ def delete_cache_file(cache_key):
 		pass
 
 
-def cache_tag_for(cache_key):
-	return f"[[MD-CACHE:{cache_key}]]"
+# def cache_tag_for(cache_key):
+# 	return f"[[MD-CACHE:{cache_key}]]"
 
 
 def read_cache_markdown(cache_key):
@@ -782,212 +783,212 @@ def embed_markdown(html, md):
 	return f"{clean_html}{MD_EMBED_PREFIX}{b64}{MD_EMBED_SUFFIX}\n"
 
 
-def html_to_plain(html):
-	converter = html2text.HTML2Text()
-	converter.body_width = 0
-	converter.ignore_links = True
-	converter.ignore_images = True
-	converter.single_line_break = True
-	return converter.handle(html)
+# def html_to_plain(html):
+# 	converter = html2text.HTML2Text()
+# 	converter.body_width = 0
+# 	converter.ignore_links = True
+# 	converter.ignore_images = True
+# 	converter.single_line_break = True
+# 	return converter.handle(html)
 
 
-def preprocess_notes_html(html):
-	placeholders = {}
-	processed_html = fix_list_nesting(html)
-
-	def create_placeholder_raw(markdown_text):
-		placeholder = f"@@PH{uuid.uuid4().hex}@@"
-		placeholders[placeholder] = markdown_text
-		return f"<div>{placeholder}</div>"
-
-	def strip_tags(text):
-		return re.sub(r'<[^>]+>', '', text)
-
-	def normalize_ws(text):
-		text = text.replace("&quot", '"')
-		text = html_lib.unescape(text)
-		text = text.replace("\u00a0", " ")
-		return re.sub(r'\s+', ' ', text).strip()
-
-	def clean_code_line(text):
-		text = text.replace("&quot", '"')
-		text = html_lib.unescape(text)
-		text = text.replace("\u00a0", " ")
-		return text.rstrip("\n")
-
-	def extract_span_text(inner, size_px):
-		spans = re.findall(
-			rf'<span[^>]*font-size:\s*{size_px}px[^>]*>(.*?)</span>',
-			inner,
-			re.IGNORECASE | re.DOTALL,
-		)
-		if not spans:
-			return None
-		text = normalize_ws(''.join(strip_tags(s) for s in spans))
-		return text if text else None
-
-	def replace_font_heading(match, size_px, prefix):
-		inner = match.group(1)
-		if not re.search(rf'font-size:\s*{size_px}px', inner, re.IGNORECASE):
-			return match.group(0)
-		text = extract_span_text(inner, size_px)
-		if not text:
-			return match.group(0)
-		return create_placeholder_raw(f"\n\n{prefix} {text}\n")
-
-	def convert_table(table_html):
-		rows = re.findall(r'<tr[^>]*>(.*?)</tr>', table_html, re.IGNORECASE | re.DOTALL)
-		if not rows:
-			return None
-		parsed = []
-		header_cells_html = None
-		max_cols = 0
-		for row_idx, row in enumerate(rows):
-			cells = re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', row, re.IGNORECASE | re.DOTALL)
-			if not cells:
-				continue
-			texts = [normalize_ws(strip_tags(c)) for c in cells]
-			parsed.append(texts)
-			max_cols = max(max_cols, len(texts))
-			if row_idx == 0:
-				header_cells_html = cells
-		if not parsed:
-			return None
-		for row in parsed:
-			if len(row) < max_cols:
-				row.extend([""] * (max_cols - len(row)))
-		header = parsed[0]
-		aligns = [":---"] * max_cols
-		if header_cells_html:
-			extra_bold = []
-			for idx, cell_html in enumerate(header_cells_html):
-				if re.search(r'text-align\s*:\s*center', cell_html, re.IGNORECASE):
-					aligns[idx] = ":---:"
-					continue
-				if re.search(r'text-align\s*:\s*right', cell_html, re.IGNORECASE):
-					aligns[idx] = "---:"
-					continue
-				if len(re.findall(r'<b\b', cell_html, re.IGNORECASE)) > 1:
-					extra_bold.append(idx)
-			if extra_bold:
-				if len(extra_bold) >= 1:
-					aligns[extra_bold[0]] = ":---:"
-				if len(extra_bold) >= 2:
-					aligns[extra_bold[1]] = "---:"
-		lines = [
-			"| " + " | ".join(header) + " |",
-			"| " + " | ".join(aligns) + " |",
-		]
-		for row in parsed[1:]:
-			lines.append("| " + " | ".join(row) + " |")
-		return "\n".join(lines)
-
-	pattern_table = re.compile(
-		r'<object>\s*(<table[^>]*>.*?</table>)\s*</object>',
-		re.IGNORECASE | re.DOTALL,
-	)
-
-	def replace_table(match):
-		md_table = convert_table(match.group(1))
-		if not md_table:
-			return match.group(0)
-		return create_placeholder_raw(f"\n\n{md_table}\n\n")
-
-	processed_html = pattern_table.sub(replace_table, processed_html)
-
-	pattern_div = re.compile(r'<div>(.*?)</div>', re.IGNORECASE | re.DOTALL)
-	processed_html = pattern_div.sub(lambda m: replace_font_heading(m, 24, "#"), processed_html)
-	processed_html = pattern_div.sub(lambda m: replace_font_heading(m, 18, "##"), processed_html)
-
-	pattern_h3 = re.compile(
-		r'<div>\s*<b>(.*?)</b>\s*<b>\s*\(H3\)\s*</b>\s*</div>',
-		re.IGNORECASE | re.DOTALL,
-	)
-	processed_html = pattern_h3.sub(
-		lambda m: create_placeholder_raw(
-			f"\n\n### {normalize_ws(strip_tags(m.group(1)))} (H3)\n"
-		),
-		processed_html,
-	)
-
-	bold_div_pattern = r'<div>\s*(?:<b>.*?</b>\s*|<br\s*/?>\s*)+</div>'
-
-	def bold_div_text(div_html):
-		text = normalize_ws(strip_tags(div_html))
-		return re.sub(r"\s+([:：,，.!?？！])", r"\1", text)
-
-	pattern_code_label = re.compile(
-		bold_div_pattern + r'(?=\s*<div>\s*<font[^>]*face="Courier"[^>]*>\s*<tt>)',
-		re.IGNORECASE | re.DOTALL,
-	)
-	processed_html = pattern_code_label.sub(
-		lambda m: create_placeholder_raw(f"**{bold_div_text(m.group(0))}**\n"),
-		processed_html,
-	)
-
-	pattern_list_heading = re.compile(
-		bold_div_pattern + r'(?=\s*<(ul|ol)\b)',
-		re.IGNORECASE | re.DOTALL,
-	)
-	processed_html = pattern_list_heading.sub(
-		lambda m: create_placeholder_raw(f"\n\n**{bold_div_text(m.group(0))}**\n"),
-		processed_html,
-	)
-
-	pattern_table_heading = re.compile(
-		bold_div_pattern + r'(?=\s*<div>\s*<object>)',
-		re.IGNORECASE | re.DOTALL,
-	)
-	processed_html = pattern_table_heading.sub(
-		lambda m: create_placeholder_raw(f"\n\n**{bold_div_text(m.group(0))}**\n"),
-		processed_html,
-	)
-
-	pattern_bold_div = re.compile(
-		bold_div_pattern
-		+ r'(?!\s*<(ul|ol)\b)'
-		+ r'(?!\s*<div>\s*<object)'
-		+ r'(?!\s*<div>\s*<font[^>]*face="Courier")',
-		re.IGNORECASE | re.DOTALL,
-	)
-
-	def replace_bold_div(match):
-		inner = match.group(0)
-		if re.search(r'font-size', inner, re.IGNORECASE):
-			return inner
-		text = bold_div_text(inner)
-		if not text:
-			return inner
-		return create_placeholder_raw(f"\n\n**{text}**\n")
-
-	processed_html = pattern_bold_div.sub(replace_bold_div, processed_html)
-
-	processed_html = replace_lists_with_markdown(
-		processed_html,
-		create_placeholder_raw,
-		normalize_ws,
-		strip_tags,
-	)
-
-	pattern_code_block = re.compile(
-		r'(?:<div>\s*<font[^>]*face="Courier"[^>]*>\s*<tt>.*?</tt>\s*</font>\s*</div>\s*){1,}',
-		re.IGNORECASE | re.DOTALL,
-	)
-
-	def replace_code_block(match):
-		block = match.group(0)
-		lines = re.findall(r'<tt>(.*?)</tt>', block, re.IGNORECASE | re.DOTALL)
-		if not lines:
-			return match.group(0)
-		cleaned = [clean_code_line(line) for line in lines]
-		fence = "```\n" + "\n".join(cleaned) + "\n```\n"
-		return create_placeholder_raw(f"\n\n{fence}\n")
-
-	processed_html = pattern_code_block.sub(replace_code_block, processed_html)
-
-	processed_html = rewrite_list_items(processed_html, normalize_ws, strip_tags)
-
-	return processed_html, placeholders
+# def preprocess_notes_html(html):
+# 	placeholders = {}
+# 	processed_html = fix_list_nesting(html)
+#
+# 	def create_placeholder_raw(markdown_text):
+# 		placeholder = f"@@PH{uuid.uuid4().hex}@@"
+# 		placeholders[placeholder] = markdown_text
+# 		return f"<div>{placeholder}</div>"
+#
+# 	def strip_tags(text):
+# 		return re.sub(r'<[^>]+>', '', text)
+#
+# 	def normalize_ws(text):
+# 		text = text.replace("&quot", '"')
+# 		text = html_lib.unescape(text)
+# 		text = text.replace("\u00a0", " ")
+# 		return re.sub(r'\s+', ' ', text).strip()
+#
+# 	def clean_code_line(text):
+# 		text = text.replace("&quot", '"')
+# 		text = html_lib.unescape(text)
+# 		text = text.replace("\u00a0", " ")
+# 		return text.rstrip("\n")
+#
+# 	def extract_span_text(inner, size_px):
+# 		spans = re.findall(
+# 			rf'<span[^>]*font-size:\s*{size_px}px[^>]*>(.*?)</span>',
+# 			inner,
+# 			re.IGNORECASE | re.DOTALL,
+# 		)
+# 		if not spans:
+# 			return None
+# 		text = normalize_ws(''.join(strip_tags(s) for s in spans))
+# 		return text if text else None
+#
+# 	def replace_font_heading(match, size_px, prefix):
+# 		inner = match.group(1)
+# 		if not re.search(rf'font-size:\s*{size_px}px', inner, re.IGNORECASE):
+# 			return match.group(0)
+# 		text = extract_span_text(inner, size_px)
+# 		if not text:
+# 			return match.group(0)
+# 		return create_placeholder_raw(f"\n\n{prefix} {text}\n")
+#
+# 	def convert_table(table_html):
+# 		rows = re.findall(r'<tr[^>]*>(.*?)</tr>', table_html, re.IGNORECASE | re.DOTALL)
+# 		if not rows:
+# 			return None
+# 		parsed = []
+# 		header_cells_html = None
+# 		max_cols = 0
+# 		for row_idx, row in enumerate(rows):
+# 			cells = re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', row, re.IGNORECASE | re.DOTALL)
+# 			if not cells:
+# 				continue
+# 			texts = [normalize_ws(strip_tags(c)) for c in cells]
+# 			parsed.append(texts)
+# 			max_cols = max(max_cols, len(texts))
+# 			if row_idx == 0:
+# 				header_cells_html = cells
+# 		if not parsed:
+# 			return None
+# 		for row in parsed:
+# 			if len(row) < max_cols:
+# 				row.extend([""] * (max_cols - len(row)))
+# 		header = parsed[0]
+# 		aligns = [":---"] * max_cols
+# 		if header_cells_html:
+# 			extra_bold = []
+# 			for idx, cell_html in enumerate(header_cells_html):
+# 				if re.search(r'text-align\s*:\s*center', cell_html, re.IGNORECASE):
+# 					aligns[idx] = ":---:"
+# 					continue
+# 				if re.search(r'text-align\s*:\s*right', cell_html, re.IGNORECASE):
+# 					aligns[idx] = "---:"
+# 					continue
+# 				if len(re.findall(r'<b\b', cell_html, re.IGNORECASE)) > 1:
+# 					extra_bold.append(idx)
+# 			if extra_bold:
+# 				if len(extra_bold) >= 1:
+# 					aligns[extra_bold[0]] = ":---:"
+# 				if len(extra_bold) >= 2:
+# 					aligns[extra_bold[1]] = "---:"
+# 		lines = [
+# 			"| " + " | ".join(header) + " |",
+# 			"| " + " | ".join(aligns) + " |",
+# 		]
+# 		for row in parsed[1:]:
+# 			lines.append("| " + " | ".join(row) + " |")
+# 		return "\n".join(lines)
+#
+# 	pattern_table = re.compile(
+# 		r'<object>\s*(<table[^>]*>.*?</table>)\s*</object>',
+# 		re.IGNORECASE | re.DOTALL,
+# 	)
+#
+# 	def replace_table(match):
+# 		md_table = convert_table(match.group(1))
+# 		if not md_table:
+# 			return match.group(0)
+# 		return create_placeholder_raw(f"\n\n{md_table}\n\n")
+#
+# 	processed_html = pattern_table.sub(replace_table, processed_html)
+#
+# 	pattern_div = re.compile(r'<div>(.*?)</div>', re.IGNORECASE | re.DOTALL)
+# 	processed_html = pattern_div.sub(lambda m: replace_font_heading(m, 24, "#"), processed_html)
+# 	processed_html = pattern_div.sub(lambda m: replace_font_heading(m, 18, "##"), processed_html)
+#
+# 	pattern_h3 = re.compile(
+# 		r'<div>\s*<b>(.*?)</b>\s*<b>\s*\(H3\)\s*</b>\s*</div>',
+# 		re.IGNORECASE | re.DOTALL,
+# 	)
+# 	processed_html = pattern_h3.sub(
+# 		lambda m: create_placeholder_raw(
+# 			f"\n\n### {normalize_ws(strip_tags(m.group(1)))} (H3)\n"
+# 		),
+# 		processed_html,
+# 	)
+#
+# 	bold_div_pattern = r'<div>\s*(?:<b>.*?</b>\s*|<br\s*/?>\s*)+</div>'
+#
+# 	def bold_div_text(div_html):
+# 		text = normalize_ws(strip_tags(div_html))
+# 		return re.sub(r"\s+([:：,，.!?？！])", r"\1", text)
+#
+# 	pattern_code_label = re.compile(
+# 		bold_div_pattern + r'(?=\s*<div>\s*<font[^>]*face="Courier"[^>]*>\s*<tt>)',
+# 		re.IGNORECASE | re.DOTALL,
+# 	)
+# 	processed_html = pattern_code_label.sub(
+# 		lambda m: create_placeholder_raw(f"**{bold_div_text(m.group(0))}**\n"),
+# 		processed_html,
+# 	)
+#
+# 	pattern_list_heading = re.compile(
+# 		bold_div_pattern + r'(?=\s*<(ul|ol)\b)',
+# 		re.IGNORECASE | re.DOTALL,
+# 	)
+# 	processed_html = pattern_list_heading.sub(
+# 		lambda m: create_placeholder_raw(f"\n\n**{bold_div_text(m.group(0))}**\n"),
+# 		processed_html,
+# 	)
+#
+# 	pattern_table_heading = re.compile(
+# 		bold_div_pattern + r'(?=\s*<div>\s*<object>)',
+# 		re.IGNORECASE | re.DOTALL,
+# 	)
+# 	processed_html = pattern_table_heading.sub(
+# 		lambda m: create_placeholder_raw(f"\n\n**{bold_div_text(m.group(0))}**\n"),
+# 		processed_html,
+# 	)
+#
+# 	pattern_bold_div = re.compile(
+# 		bold_div_pattern
+# 		+ r'(?!\s*<(ul|ol)\b)'
+# 		+ r'(?!\s*<div>\s*<object)'
+# 		+ r'(?!\s*<div>\s*<font[^>]*face="Courier")',
+# 		re.IGNORECASE | re.DOTALL,
+# 	)
+#
+# 	def replace_bold_div(match):
+# 		inner = match.group(0)
+# 		if re.search(r'font-size', inner, re.IGNORECASE):
+# 			return inner
+# 		text = bold_div_text(inner)
+# 		if not text:
+# 			return inner
+# 		return create_placeholder_raw(f"\n\n**{text}**\n")
+#
+# 	processed_html = pattern_bold_div.sub(replace_bold_div, processed_html)
+#
+# 	processed_html = replace_lists_with_markdown(
+# 		processed_html,
+# 		create_placeholder_raw,
+# 		normalize_ws,
+# 		strip_tags,
+# 	)
+#
+# 	pattern_code_block = re.compile(
+# 		r'(?:<div>\s*<font[^>]*face="Courier"[^>]*>\s*<tt>.*?</tt>\s*</font>\s*</div>\s*){1,}',
+# 		re.IGNORECASE | re.DOTALL,
+# 	)
+#
+# 	def replace_code_block(match):
+# 		block = match.group(0)
+# 		lines = re.findall(r'<tt>(.*?)</tt>', block, re.IGNORECASE | re.DOTALL)
+# 		if not lines:
+# 			return match.group(0)
+# 		cleaned = [clean_code_line(line) for line in lines]
+# 		fence = "```\n" + "\n".join(cleaned) + "\n```\n"
+# 		return create_placeholder_raw(f"\n\n{fence}\n")
+#
+# 	processed_html = pattern_code_block.sub(replace_code_block, processed_html)
+#
+# 	processed_html = rewrite_list_items(processed_html, normalize_ws, strip_tags)
+#
+# 	return processed_html, placeholders
 
 
 def strip_tags(text):
@@ -999,6 +1000,107 @@ def normalize_ws(text):
 	text = html_lib.unescape(text)
 	text = text.replace("\u00a0", " ")
 	return re.sub(r"\s+", " ", text).strip()
+
+
+def inline_html_to_markdown(fragment):
+	if not fragment:
+		return ""
+	soup = BeautifulSoup(fragment, "html.parser")
+
+	def emphasis_kind(tag):
+		name = tag.name.lower()
+		if name in ("b", "strong"):
+			return "bold"
+		if name in ("i", "em"):
+			return "italic"
+		if name in ("s", "strike", "del"):
+			return "strike"
+		return None
+
+	def is_ws_node(node):
+		if not isinstance(node, NavigableString):
+			return False
+		text = str(node).replace("\u00a0", " ")
+		return text.strip() == ""
+
+	def merge_adjacent_emphasis(parent):
+		node = parent.contents[0] if parent.contents else None
+		while node is not None:
+			if isinstance(node, Tag):
+				kind = emphasis_kind(node)
+				if kind:
+					while True:
+						nxt = node.next_sibling
+						if nxt is None:
+							break
+						if is_ws_node(nxt):
+							ws = nxt
+							nxt2 = ws.next_sibling
+							if isinstance(nxt2, Tag) and emphasis_kind(nxt2) == kind:
+								ws.extract()
+								node.append(ws)
+								for item in list(nxt2.contents):
+									node.append(item)
+								nxt2.decompose()
+								continue
+							break
+						if isinstance(nxt, Tag) and emphasis_kind(nxt) == kind:
+							for item in list(nxt.contents):
+								node.append(item)
+							nxt.decompose()
+							continue
+						break
+				merge_adjacent_emphasis(node)
+			node = node.next_sibling
+
+	def wrap_emphasis(token, inner):
+		if not inner:
+			return ""
+		lead_len = 0
+		while lead_len < len(inner) and inner[lead_len].isspace():
+			lead_len += 1
+		trail_len = 0
+		while trail_len < len(inner) - lead_len and inner[len(inner) - 1 - trail_len].isspace():
+			trail_len += 1
+		if lead_len == 0 and trail_len == 0:
+			return f"{token}{inner}{token}"
+		core_end = len(inner) - trail_len if trail_len else len(inner)
+		core = inner[lead_len:core_end]
+		if not core:
+			return inner
+		lead = inner[:lead_len]
+		trail = inner[core_end:]
+		return f"{lead}{token}{core}{token}{trail}"
+
+	def walk(node):
+		if isinstance(node, NavigableString):
+			return str(node)
+		if not isinstance(node, Tag):
+			return ""
+		name = node.name.lower()
+		if name == "br":
+			return " "
+		inner = "".join(walk(child) for child in node.contents)
+		if not inner:
+			return ""
+		if name in ("b", "strong"):
+			return wrap_emphasis("**", inner)
+		if name in ("i", "em"):
+			return wrap_emphasis("*", inner)
+		if name in ("s", "strike", "del"):
+			return wrap_emphasis("~~", inner)
+		if name in ("tt", "code"):
+			return f"`{inner}`"
+		if name == "a":
+			href = node.get("href", "").strip()
+			if href:
+				return f"[{inner}]({href})"
+			return inner
+		return inner
+
+	merge_adjacent_emphasis(soup)
+	text = "".join(walk(child) for child in soup.contents)
+	return normalize_ws(text)
 
 
 def clean_code_line(text):
@@ -1074,7 +1176,7 @@ def convert_list_to_markdown(list_html, normalize_ws_func, strip_tags_func, inde
 		text_html = li_inner
 		for _, nested_html in nested_lists:
 			text_html = text_html.replace(nested_html, "")
-		text = normalize_ws_func(strip_tags_func(text_html))
+		text = inline_html_to_markdown(text_html)
 		if not text:
 			continue
 		if list_tag == "ol":
@@ -1082,8 +1184,6 @@ def convert_list_to_markdown(list_html, normalize_ws_func, strip_tags_func, inde
 			index += 1
 		else:
 			prefix = "- "
-		style = detect_li_style(li_inner)
-		text = apply_li_style(text, style)
 		lines.append(" " * indent + prefix + text)
 		for _, nested_html in nested_lists:
 			nested_md = convert_list_to_markdown(nested_html, normalize_ws_func, strip_tags_func, indent + 2)
@@ -1295,23 +1395,7 @@ def convert_table_html(table_html):
 		if len(row) < max_cols:
 			row.extend([""] * (max_cols - len(row)))
 	header = parsed[0]
-	aligns = [":---"] * max_cols
-	if header_cells_html:
-		extra_bold = []
-		for idx, cell_html in enumerate(header_cells_html):
-			if re.search(r"text-align\s*:\s*center", cell_html, re.IGNORECASE):
-				aligns[idx] = ":---:"
-				continue
-			if re.search(r"text-align\s*:\s*right", cell_html, re.IGNORECASE):
-				aligns[idx] = "---:"
-				continue
-			if len(re.findall(r"<b\b", cell_html, re.IGNORECASE)) > 1:
-				extra_bold.append(idx)
-		if extra_bold:
-			if len(extra_bold) >= 1:
-				aligns[extra_bold[0]] = ":---:"
-			if len(extra_bold) >= 2:
-				aligns[extra_bold[1]] = "---:"
+	aligns = [":---:"] * max_cols
 	lines = [
 		"| " + " | ".join(header) + " |",
 		"| " + " | ".join(aligns) + " |",
@@ -1464,43 +1548,7 @@ def html_to_markdown(html, marker=None):
 			if code_lines:
 				md_parts.append("```\n" + "\n".join(code_lines) + "\n```")
 			continue
-		if div_is_bold_strike_line(inner):
-			text = normalize_ws(strip_tags(inner))
-			if text:
-				md_parts.append(f"**~~{text}~~**")
-			i += 1
-			continue
-		if div_is_italic_strike_line(inner):
-			text = normalize_ws(strip_tags(inner))
-			if text:
-				md_parts.append(f"*~~{text}~~*")
-			i += 1
-			continue
-		if div_is_bold_italic_line(inner):
-			text = normalize_ws(strip_tags(inner))
-			if text:
-				md_parts.append(f"***{text}***")
-			i += 1
-			continue
-		if div_is_strike_line(inner):
-			text = normalize_ws(strip_tags(inner))
-			if text:
-				md_parts.append(f"~~{text}~~")
-			i += 1
-			continue
-		if div_is_italic_line(inner):
-			text = normalize_ws(strip_tags(inner))
-			if text:
-				md_parts.append(f"*{text}*")
-			i += 1
-			continue
-		if div_is_bold_only(inner):
-			text = normalize_ws(strip_tags(inner))
-			if text:
-				md_parts.append(f"**{text}**")
-			i += 1
-			continue
-		text = normalize_ws(strip_tags(inner))
+		text = inline_html_to_markdown(inner)
 		if text:
 			md_parts.append(text)
 		i += 1
@@ -1525,6 +1573,7 @@ def normalize_emphasis(md):
 	md = re.sub(r"__\*([^*\n]+)\*__", r"***\1***", md)
 	md = re.sub(r"(?<!\w)_([^_\n]+)_(?!\w)", r"*\1*", md)
 	return md
+
 
 
 def dedent_list_items(md):
@@ -1726,6 +1775,15 @@ class NotesCacheWorker(QThread):
 	def run(self):
 		while self._running:
 			try:
+				parent = self.parent()
+				if parent and getattr(parent, "notes_refresh_in_progress", False):
+					interval = self._next_interval_seconds()
+					steps = max(1, int(interval / 0.1))
+					for _ in range(steps):
+						if not self._running:
+							return
+						time.sleep(0.1)
+					continue
 				notes = _fetch_notes_snapshot()
 				_write_notes_cache(notes, self.cache_path)
 				self.updated.emit(len(notes))
@@ -1828,7 +1886,9 @@ class NotesFolderDialog(QDialog):
 		self.setWindowTitle("Select Notes")
 		self.center()
 		self.resize(520, 320)
-		self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
+		self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+		self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+		# self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
 		self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 		# self._centered_once = False
 
@@ -2002,6 +2062,11 @@ class window3(QWidget):  # 主窗口
 		self.notes_force_reload = False
 		self.notes_pending_title = None
 		self.notes_pending_folder = None
+		self.notes_require_match_on_show = False
+		self.notes_last_folder = None
+		self.notes_last_title = None
+		self.notes_refresh_in_progress = False
+		self._notes_positions = {}
 		self.notes_wait_dialog = None
 		self.notes_wait_timer = None
 		self.notes_wait_target = None
@@ -2015,10 +2080,21 @@ class window3(QWidget):  # 主窗口
 		if not os.path.exists(fulldir1):
 			os.mkdir(fulldir1)
 
-		self.topleft = QTextEdit(self)
+		self._current_font_size = self._read_font_size()
+		self._current_font_family = self._resolve_font_family()
+		self.set_textedit_font(self._current_font_size, self._current_font_family)
+
+		self.topleft = QWebEngineView(self)
+		self.topleft.setStyleSheet("border: 0px; background: #F3F2EE;")
+		self.topleft.page().setBackgroundColor(QColor("#F3F2EE"))
+		self.topleft_frame = QFrame(self)
+		self.topleft_frame.setObjectName("webFrame")
+		self.topleft_frame.setMaximumHeight(SCREEN_HEIGHT - 200)
+		topleft_layout = QVBoxLayout(self.topleft_frame)
+		topleft_layout.setContentsMargins(1, 5, 1, 3)
+		topleft_layout.setSpacing(0)
+		topleft_layout.addWidget(self.topleft)
 		self.topleft.setMaximumHeight(SCREEN_HEIGHT - 200)
-		self.topleft.setReadOnly(True)
-		#self.topleft.setDisabled(True)
 		self.topleftshow = 1
 
 		self.topright = QTextEdit(self)
@@ -2036,7 +2112,7 @@ class window3(QWidget):  # 主窗口
 		self.bottom.cursorPositionChanged.connect(self.cursorchanged)
 
 		self.splitter1 = QSplitter(Qt.Orientation.Horizontal)
-		self.splitter1.addWidget(self.topleft)
+		self.splitter1.addWidget(self.topleft_frame)
 		self.splitter1.addWidget(self.topright)
 		self.splitter1.splitterMoved.connect(self.splitter1_move)
 
@@ -2282,7 +2358,6 @@ The window will float at top all the time as you focus on typing. If you want to
 		self.topright.setHtml(endhtmlbio)
 		self.widget0.currentIndexChanged.connect(self.index_change)
 
-		self.setStyleSheet(style_sheet_ori)
 		w2.setStyleSheet(style_sheet_ori)
 
 		self.show()
@@ -2396,6 +2471,7 @@ The window will float at top all the time as you focus on typing. If you want to
 		"""根据屏幕高度调整内部组件的尺寸和位置"""
 		# 调整顶部文本编辑器的最大高度
 		self.topleft.setMaximumHeight(screen_height - 200)
+		self.topleft_frame.setMaximumHeight(screen_height - 200)
 		self.topright.setMaximumHeight(screen_height - 200)
 		# 调整主内容区域的高度
 		self.qw0.setFixedHeight(screen_height - 118)
@@ -2610,7 +2686,7 @@ The window will float at top all the time as you focus on typing. If you want to
 				self.bottom.blockSignals(True)
 				self.bottom.clear()
 				self.bottom.blockSignals(False)
-				self.topleft.clear()
+				self.topleft.setHtml("")
 				self.topright.clear()
 			return
 		self._set_notes_active(False)
@@ -2632,6 +2708,77 @@ The window will float at top all the time as you focus on typing. If you want to
 		if result == QMessageBox.StandardButton.Discard:
 			return "discard"
 		return "cancel"
+
+	def _refresh_notes_from_source(self):
+		if self.notes_loader and self.notes_loader.isRunning():
+			return
+		self.notes_refresh_in_progress = True
+		self.notes_loader = NotesLoader(self)
+		self.notes_loader.finished.connect(self._on_notes_loader_finished)
+		self.notes_loader.error.connect(self._on_notes_loader_error)
+		self.notes_loader.start()
+
+	def _on_notes_loader_finished(self, notes):
+		if self.notes_loader:
+			self.notes_loader.deleteLater()
+			self.notes_loader = None
+		self.notes_refresh_in_progress = False
+		try:
+			_write_notes_cache(notes, self.notes_cache_path)
+		except Exception:
+			pass
+		self.on_notes_loaded(notes)
+
+	def _on_notes_loader_error(self, message):
+		if self.notes_loader:
+			self.notes_loader.deleteLater()
+			self.notes_loader = None
+		self.notes_refresh_in_progress = False
+		self.on_notes_error(message)
+
+	def _confirm_notes_title_change(self, old_title, new_title):
+		box = QMessageBox(self)
+		box.setWindowTitle("Note Title Changed")
+		box.setText(f"The note title will change from \"{old_title}\" to \"{new_title}\".\nContinue saving?")
+		box.setStandardButtons(
+			QMessageBox.StandardButton.Save
+			| QMessageBox.StandardButton.Cancel
+		)
+		box.setDefaultButton(QMessageBox.StandardButton.Save)
+		result = box.exec()
+		return result == QMessageBox.StandardButton.Save
+
+	def _prompt_notes_reselect(self, folder, title):
+		location = folder or "Unfiled"
+		box = QMessageBox(self)
+		box.setWindowTitle("Note Not Found")
+		box.setText(
+			f"Couldn't match the current note \"{title}\" in \"{location}\".\n"
+			"Please reselect the note path."
+		)
+		box.setStandardButtons(
+			QMessageBox.StandardButton.Ok
+			| QMessageBox.StandardButton.Cancel
+		)
+		box.setDefaultButton(QMessageBox.StandardButton.Ok)
+		result = box.exec()
+		if result == QMessageBox.StandardButton.Ok:
+			self.open_notes_folder_dialog()
+
+	def _notes_title_from_md(self, md):
+		if not md:
+			return ""
+		for line in md.splitlines():
+			stripped = line.strip()
+			if not stripped:
+				continue
+			try:
+				html = markdown_to_html(stripped)
+			except Exception:
+				return stripped
+			plain = normalize_ws(strip_tags(html))
+			return plain or stripped
+		return ""
 
 	def updatecontent(self):
 		# set text
@@ -2675,6 +2822,52 @@ The window will float at top all the time as you focus on typing. If you want to
 			endbio = self.addb2(previewtext.replace('*', ''))
 			endhtmlbio = self.md2html(endbio)
 			self.topright.setHtml(endhtmlbio)
+
+	def _read_font_size(self, default=14):
+		try:
+			return int(codecs.open(BasePath + 'fs.txt', 'r', encoding='utf-8').read())
+		except Exception:
+			return default
+
+	def _resolve_font_family(self, fallback="Times New Roman"):
+		try:
+			font_family = codecs.open(BasePath + 'lastused.txt', 'r', encoding='utf-8').read()
+		except Exception:
+			return fallback
+		if font_family == '0':
+			font_path = BasePath + "chillduanheisong_widelight.otf"
+			font_id = QFontDatabase.addApplicationFont(font_path)
+			if font_id != -1:
+				families = QFontDatabase.applicationFontFamilies(font_id)
+				if families:
+					return families[0]
+			return fallback
+		return font_family
+
+	def set_textedit_font(self, size, family):
+		self._current_font_size = size
+		self._current_font_family = family
+		font_override = f"""
+QTextEdit{{
+	font: {size}pt {family};
+}}
+QListWidget{{
+	font: {size}pt {family};
+}}
+"""
+		app = QApplication.instance()
+		if app is not None:
+			app.setStyleSheet(style_sheet_ori + "\n" + font_override)
+		if hasattr(self, "bottom") and hasattr(self, "topleft") and hasattr(self, "topright"):
+			try:
+				previewtext = self.bottom.toPlainText()
+				if self.topleftshow == 1:
+					self.topleft.setHtml(self.md2html(previewtext))
+				if self.toprightshow == 1:
+					endbio = self.addb2(previewtext.replace('*', ''))
+					self.topright.setHtml(self.md2html(endbio))
+			except Exception:
+				pass
 
 	def splitter1_move(self):
 		if self.topleft.width() == 0 or self.topleft.height() == 0:
@@ -2779,22 +2972,92 @@ The window will float at top all the time as you focus on typing. If you want to
 		if self.bottom.verticalScrollBar().maximum() != 0:
 			proportion = self.bottom.verticalScrollBar().value() / self.bottom.verticalScrollBar().maximum()
 			if self.topleftshow == 1:
-				tar_pro = int(self.topleft.verticalScrollBar().maximum() * proportion)
-				self.topleft.verticalScrollBar().setValue(tar_pro)
+				if hasattr(self.topleft, "verticalScrollBar"):
+					tar_pro = int(self.topleft.verticalScrollBar().maximum() * proportion)
+					self.topleft.verticalScrollBar().setValue(tar_pro)
+				else:
+					self._set_webview_scroll_by_proportion(self.topleft, proportion)
 			if self.toprightshow == 1:
 				tar_pro2 = int(self.topright.verticalScrollBar().maximum() * proportion)
 				self.topright.verticalScrollBar().setValue(tar_pro2)
+
+	def _set_webview_scroll_by_proportion(self, view, proportion):
+		# QWebEngineView does not expose scroll bars; use JS to scroll instead.
+		if proportion < 0:
+			proportion = 0
+		elif proportion > 1:
+			proportion = 1
+		js = """
+		(function(){
+			const doc = document.documentElement;
+			const body = document.body;
+			const scrollHeight = Math.max(doc.scrollHeight, body.scrollHeight);
+			const clientHeight = doc.clientHeight;
+			const maxScroll = Math.max(0, scrollHeight - clientHeight);
+			const target = Math.floor(maxScroll * %s);
+			window.scrollTo(0, target);
+		})();
+		""" % ("{:.6f}".format(proportion))
+		try:
+			view.page().runJavaScript(js)
+		except Exception:
+			pass
 
 	def cursorchanged(self):
 		self.bottom.ensureCursorVisible()  # 游标可用
 		cursor = self.bottom.textCursor()  # 设置游标
 		position = cursor.position()
+		if self.notes_mode_enabled and self.notes_active:
+			note_key = self._current_notes_key()
+			if note_key:
+				scrollbar = self.bottom.verticalScrollBar()
+				scroll_proportion = 0
+				if scrollbar.maximum() != 0:
+					scroll_proportion = scrollbar.value() / scrollbar.maximum()
+				self._notes_positions[note_key] = {
+					"cursor": position,
+					"scroll_proportion": scroll_proportion,
+				}
+			return
 		fullcontent = self.bottom.toPlainText()
 		list_fullcontent = list(fullcontent)
 		remove_list = list_fullcontent[:position]
 		proportion = len(remove_list)
 		with open(BasePath + 'text_position.txt', 'w', encoding='utf-8') as f0:
 				f0.write(str(proportion))
+
+	def _current_notes_key(self):
+		if not self.notes_current_title:
+			return None
+		folder = (self.notes_current_folder or "Unfiled").strip() or "Unfiled"
+		title = self.notes_current_title or "(Untitled)"
+		return f"{folder}/{title}"
+
+	def _restore_notes_position(self, note_key):
+		if not note_key:
+			return
+		data = self._notes_positions.get(note_key)
+		if not data:
+			return
+		pos = data.get("cursor", 0)
+		if pos < 0:
+			pos = 0
+		text_len = len(self.bottom.toPlainText())
+		if pos > text_len:
+			pos = text_len
+		try:
+			cursor = self.bottom.textCursor()
+			cursor.setPosition(pos)
+			self.bottom.setTextCursor(cursor)
+			self.bottom.ensureCursorVisible()
+			scroll_proportion = data.get("scroll_proportion")
+			if scroll_proportion is not None:
+				scrollbar = self.bottom.verticalScrollBar()
+				if scrollbar.maximum() != 0:
+					scrollbar.setValue(int(scrollbar.maximum() * scroll_proportion))
+			QTimer.singleShot(50, self.scrollchanged)
+		except Exception:
+			pass
 
 	def open_file(self):
 		home_dir = str(Path.home())
@@ -2837,7 +3100,7 @@ The window will float at top all the time as you focus on typing. If you want to
 
 	def new_file(self):
 		self.bottom.clear()
-		self.topleft.clear()
+		self.topleft.setHtml("")
 		self.topright.clear()
 
 		current_time = datetime.now().strftime('%Y-%m-%d %f')
@@ -2869,7 +3132,7 @@ The window will float at top all the time as you focus on typing. If you want to
 	def index_change(self, i):
 		self._set_notes_active(False)
 		self.bottom.clear()
-		self.topleft.clear()
+		self.topleft.setHtml("")
 		self.topright.clear()
 
 		# set text
@@ -2956,13 +3219,13 @@ The window will float at top all the time as you focus on typing. If you want to
 	def _set_notes_export_enabled(self, enabled):
 		self.btn_notes_export.setEnabled(bool(enabled))
 
-	def _enforce_window_width(self):
-		if not self.qw0.isVisible():
-			return
-		if self.width() == 1520:
-			return
-		screen_geom = self._current_window_screen_geometry()
-		self._apply_screen_geometry(screen_geom)
+	# def _enforce_window_width(self):
+	# 	if not self.qw0.isVisible():
+	# 		return
+	# 	if self.width() == 1520:
+	# 		return
+	# 	screen_geom = self._current_window_screen_geometry()
+	# 	self._apply_screen_geometry(screen_geom)
 
 	def _log_layout_state(self, tag):
 		if not DEBUG_LAYOUT:
@@ -3061,7 +3324,7 @@ The window will float at top all the time as you focus on typing. If you want to
 			self.bottom.blockSignals(True)
 			self.bottom.clear()
 			self.bottom.blockSignals(False)
-			self.topleft.clear()
+			self.topleft.setHtml("")
 			self.topright.clear()
 
 	def _note_in_cache(self, notes, folder, title):
@@ -3086,6 +3349,10 @@ The window will float at top all the time as you focus on typing. If you want to
 			layout.addWidget(label)
 			self.notes_wait_dialog.setLayout(layout)
 			self.notes_wait_dialog.setFixedSize(260, 90)
+			qr = self.frameGeometry()
+			cp = self.screen().availableGeometry().center()
+			qr.moveCenter(cp)
+			self.notes_wait_dialog.move(qr.topLeft())
 		self.notes_wait_dialog.show()
 		if not self.notes_wait_timer:
 			self.notes_wait_timer = QTimer(self)
@@ -3187,9 +3454,12 @@ The window will float at top all the time as you focus on typing. If you want to
 			return
 		if not self.notes_current_folder and not self.notes_folder_dialog:
 			return
+		self.notes_last_folder = self.notes_current_folder
+		self.notes_last_title = self.notes_current_title
+		self.notes_require_match_on_show = True
 		self.notes_reload_pending = True
 		self.notes_force_reload = True
-		self.load_notes()
+		self._refresh_notes_from_source()
 
 	def toggle_notes_mode(self):
 		self._log_layout_state("toggle_before")
@@ -3263,6 +3533,11 @@ The window will float at top all the time as you focus on typing. If you want to
 		if self.notes_reload_pending:
 			self.notes_reload_pending = False
 			if self._select_notes_after_reload():
+				self.notes_require_match_on_show = False
+				return
+			if self.notes_require_match_on_show and self.notes_last_title:
+				self.notes_require_match_on_show = False
+				self._prompt_notes_reselect(self.notes_last_folder, self.notes_last_title)
 				return
 		self.notes_current_folder = None
 		self.notes_current_title = None
@@ -3329,19 +3604,19 @@ The window will float at top all the time as you focus on typing. If you want to
 			self.notes_folder_dialog.set_notes([])
 			self.notes_folder_dialog.set_status(message)
 
-	def on_notes_folder_selected(self, folder):
-		self.notes_current_title = None
-		self._apply_notes_folder(folder)
-		if self.notes_mode_enabled:
-			current_index = self.widget_notes.currentIndex()
-			if 0 <= current_index < len(self.notes_current_list):
-				self.notes_index_change(current_index)
-			else:
-				self.bottom.blockSignals(True)
-				self.bottom.clear()
-				self.bottom.blockSignals(False)
-				self.topleft.clear()
-				self.topright.clear()
+	# def on_notes_folder_selected(self, folder):
+	# 	self.notes_current_title = None
+	# 	self._apply_notes_folder(folder)
+	# 	if self.notes_mode_enabled:
+	# 		current_index = self.widget_notes.currentIndex()
+	# 		if 0 <= current_index < len(self.notes_current_list):
+	# 			self.notes_index_change(current_index)
+	# 		else:
+	# 			self.bottom.blockSignals(True)
+	# 			self.bottom.clear()
+	# 			self.bottom.blockSignals(False)
+	# 			self.topleft.clear()
+	# 			self.topright.clear()
 
 	def on_notes_note_selected(self, note):
 		folder = (note.get("folder") or "Unfiled").strip() or "Unfiled"
@@ -3362,7 +3637,7 @@ The window will float at top all the time as you focus on typing. If you want to
 				self.bottom.blockSignals(True)
 				self.bottom.clear()
 				self.bottom.blockSignals(False)
-				self.topleft.clear()
+				self.topleft.setHtml("")
 				self.topright.clear()
 
 	def new_notes_note(self):
@@ -3504,6 +3779,10 @@ The window will float at top all the time as you focus on typing. If you want to
 			note_html = self._read_note_html(folder, title)
 			if note_html is None:
 				note_html = ""
+			if self.notes_require_match_on_show and not note_html:
+				self.notes_require_match_on_show = False
+				self._prompt_notes_reselect(folder, title)
+				return
 			note["body"] = note_html
 		note_key = f"{folder}/{title}"
 		if self.notes_force_reload:
@@ -3517,11 +3796,12 @@ The window will float at top all the time as you focus on typing. If you want to
 		self.bottom.blockSignals(True)
 		self.bottom.setPlainText(note_md)
 		self.bottom.blockSignals(False)
+		self._restore_notes_position(note_key)
 		if not note_md:
-			self.topleft.clear()
-			self.topright.clear()
-			self._set_notes_dirty(False)
-			return
+				self.topleft.setHtml("")
+				self.topright.clear()
+				self._set_notes_dirty(False)
+				return
 		rendered_html = markdown_to_html(note_md)
 		if self.topleftshow == 1:
 			self.topleft.setHtml(self.md2html("", pre_rendered_html=rendered_html))
@@ -3545,6 +3825,11 @@ The window will float at top all the time as you focus on typing. If you want to
 		folder = (note.get("folder") or "Unfiled").strip() or "Unfiled"
 		title = note.get("title") or "(Untitled)"
 		note_md = self.bottom.toPlainText()
+		new_title = self._notes_title_from_md(note_md)
+		if new_title and new_title != title:
+			if not self._confirm_notes_title_change(title, new_title):
+				self._set_notes_dirty(True)
+				return
 		note_html = markdown_to_html(note_md)
 		note_html = embed_markdown(note_html, note_md)
 		try:
@@ -3555,6 +3840,12 @@ The window will float at top all the time as you focus on typing. If you want to
 		note_key = f"{folder}/{title}"
 		delete_cache_file(note_key)
 		note["body"] = note_html
+		if new_title and new_title != title:
+			note["title"] = new_title
+			self.notes_current_title = new_title
+			self.notes_pending_title = new_title
+			self.notes_pending_folder = folder
+			self._start_notes_wait(folder, new_title)
 		try:
 			_write_notes_cache(self.notes_data, self.notes_cache_path)
 		except Exception:
@@ -3633,7 +3924,7 @@ The window will float at top all the time as you focus on typing. If you want to
 		w3.bottom.textChanged.disconnect(w3.text_change)
 
 		self.bottom.clear()
-		self.topleft.clear()
+		self.topleft.setHtml("")
 		self.topright.clear()
 
 		home_dir = str(Path.home())
@@ -4104,115 +4395,165 @@ The window will float at top all the time as you focus on typing. If you want to
 
 	def md2html(self, mdstr, pre_rendered_html=None):
 		extras = ['code-friendly', 'fenced-code-blocks', 'footnotes', 'tables', 'code-color', 'pyshell', 'nofollow',
-				  'cuddled-lists', 'header ids', 'nofollow']
+				  'cuddled-lists', 'header ids', 'strike', 'nofollow']
 
 		html = """
-	    <html>
-	    <head>
-	    <meta content="text/html; charset=utf-8" http-equiv="content-type" />
-	    <style>
-	        .hll { background-color: #ffffcc }
-	        .c { color: #0099FF; font-style: italic } /* Comment */
-	        .err { color: #AA0000; background-color: #FFAAAA } /* Error */
-	        .k { color: #006699; font-weight: bold } /* Keyword */
-	        .o { color: #555555 } /* Operator */
-	        .ch { color: #0099FF; font-style: italic } /* Comment.Hashbang */
-	        .cm { color: #0099FF; font-style: italic } /* Comment.Multiline */
-	        .cp { color: #009999 } /* Comment.Preproc */
-	        .cpf { color: #0099FF; font-style: italic } /* Comment.PreprocFile */
-	        .c1 { color: #0099FF; font-style: italic } /* Comment.Single */
-	        .cs { color: #0099FF; font-weight: bold; font-style: italic } /* Comment.Special */
-	        .gd { background-color: #FFCCCC; border: 1px solid #CC0000 } /* Generic.Deleted */
-	        .ge { font-style: italic } /* Generic.Emph */
-	        .gr { color: #FF0000 } /* Generic.Error */
-	        .gh { color: #003300; font-weight: bold } /* Generic.Heading */
-	        .gi { background-color: #CCFFCC; border: 1px solid #00CC00 } /* Generic.Inserted */
-	        .go { color: #AAAAAA } /* Generic.Output */
-	        .gp { color: #000099; font-weight: bold } /* Generic.Prompt */
-	        .gs { font-weight: bold } /* Generic.Strong */
-	        .gu { color: #003300; font-weight: bold } /* Generic.Subheading */
-	        .gt { color: #99CC66 } /* Generic.Traceback */
-	        .kc { color: #006699; font-weight: bold } /* Keyword.Constant */
-	        .kd { color: #006699; font-weight: bold } /* Keyword.Declaration */
-	        .kn { color: #006699; font-weight: bold } /* Keyword.Namespace */
-	        .kp { color: #006699 } /* Keyword.Pseudo */
-	        .kr { color: #006699; font-weight: bold } /* Keyword.Reserved */
-	        .kt { color: #007788; font-weight: bold } /* Keyword.Type */
-	        .m { color: #FF6600 } /* Literal.Number */
-	        .s { color: #CC3300 } /* Literal.String */
-	        .na { color: #330099 } /* Name.Attribute */
-	        .nb { color: #336666 } /* Name.Builtin */
-	        .nc { color: #00AA88; font-weight: bold } /* Name.Class */
-	        .no { color: #336600 } /* Name.Constant */
-	        .nd { color: #9999FF } /* Name.Decorator */
-	        .ni { color: #999999; font-weight: bold } /* Name.Entity */
-	        .ne { color: #CC0000; font-weight: bold } /* Name.Exception */
-	        .nf { color: #CC00FF } /* Name.Function */
-	        .nl { color: #9999FF } /* Name.Label */
-	        .nn { color: #00CCFF; font-weight: bold } /* Name.Namespace */
-	        .nt { color: #330099; font-weight: bold } /* Name.Tag */
-	        .nv { color: #003333 } /* Name.Variable */
-	        .ow { color: #000000; font-weight: bold } /* Operator.Word */
-	        .w { color: #bbbbbb } /* Text.Whitespace */
-	        .mb { color: #FF6600 } /* Literal.Number.Bin */
-	        .mf { color: #FF6600 } /* Literal.Number.Float */
-	        .mh { color: #FF6600 } /* Literal.Number.Hex */
-	        .mi { color: #FF6600 } /* Literal.Number.Integer */
-	        .mo { color: #FF6600 } /* Literal.Number.Oct */
-	        .sa { color: #CC3300 } /* Literal.String.Affix */
-	        .sb { color: #CC3300 } /* Literal.String.Backtick */
-	        .sc { color: #CC3300 } /* Literal.String.Char */
-	        .dl { color: #CC3300 } /* Literal.String.Delimiter */
-	        .sd { color: #CC3300; font-style: italic } /* Literal.String.Doc */
-	        .s2 { color: #CC3300 } /* Literal.String.Double */
-	        .se { color: #CC3300; font-weight: bold } /* Literal.String.Escape */
-	        .sh { color: #CC3300 } /* Literal.String.Heredoc */
-	        .si { color: #AA0000 } /* Literal.String.Interpol */
-	        .sx { color: #CC3300 } /* Literal.String.Other */
-	        .sr { color: #33AAAA } /* Literal.String.Regex */
-	        .s1 { color: #CC3300 } /* Literal.String.Single */
-	        .ss { color: #FFCC33 } /* Literal.String.Symbol */
-	        .bp { color: #336666 } /* Name.Builtin.Pseudo */
-	        .fm { color: #CC00FF } /* Name.Function.Magic */
-	        .vc { color: #003333 } /* Name.Variable.Class */
-	        .vg { color: #003333 } /* Name.Variable.Global */
-	        .vi { color: #003333 } /* Name.Variable.Instance */
-	        .vm { color: #003333 } /* Name.Variable.Magic */
-	        .il { color: #FF6600 } /* Literal.Number.Integer.Long */
-	        table {
-	                font-family: verdana,arial,sans-serif;
-	                font-size:11px;
-	                color:#333333;
-	                border-width: 1px;
-	                border-color: #999999;
-	                border-collapse: collapse;
-	                }
-	        th {
-	            background:#b5cfd2 url('cell-blue.jpg');
-	            border-width: 1px;
-	            padding: 8px;
-	            border-style: solid;
-	            border-color: #999999;
-	            }
-	        td {
-	            background:#dcddc0 url('cell-grey.jpg');
-	            border-width: 1px;
-	            padding: 8px;
-	            border-style: solid;
-	            border-color: #999999;
-	            }
-	    </style>
-	    </head>
-	    <body>
-	        %s
-	    </body>
-	    </html>
-	    """
+		<html>
+		<head>
+		<meta content="text/html; charset=utf-8" http-equiv="content-type" />
+		<style>
+				.hll { background-color: #ffffcc }
+				.c { color: #0099FF; font-style: italic } /* Comment */
+				.err { color: #AA0000; background-color: #FFAAAA } /* Error */
+				.k { color: #006699; font-weight: bold } /* Keyword */
+				.o { color: #555555 } /* Operator */
+				.ch { color: #0099FF; font-style: italic } /* Comment.Hashbang */
+				.cm { color: #0099FF; font-style: italic } /* Comment.Multiline */
+				.cp { color: #009999 } /* Comment.Preproc */
+				.cpf { color: #0099FF; font-style: italic } /* Comment.PreprocFile */
+				.c1 { color: #0099FF; font-style: italic } /* Comment.Single */
+				.cs { color: #0099FF; font-weight: bold; font-style: italic } /* Comment.Special */
+				.gd { background-color: #FFCCCC; border: 1px solid #CC0000 } /* Generic.Deleted */
+				.ge { font-style: italic } /* Generic.Emph */
+				.gr { color: #FF0000 } /* Generic.Error */
+				.gh { color: #003300; font-weight: bold } /* Generic.Heading */
+				.gi { background-color: #CCFFCC; border: 1px solid #00CC00 } /* Generic.Inserted */
+				.go { color: #AAAAAA } /* Generic.Output */
+				.gp { color: #000099; font-weight: bold } /* Generic.Prompt */
+				.gs { font-weight: bold } /* Generic.Strong */
+				.gu { color: #003300; font-weight: bold } /* Generic.Subheading */
+				.gt { color: #99CC66 } /* Generic.Traceback */
+				.kc { color: #006699; font-weight: bold } /* Keyword.Constant */
+				.kd { color: #006699; font-weight: bold } /* Keyword.Declaration */
+				.kn { color: #006699; font-weight: bold } /* Keyword.Namespace */
+				.kp { color: #006699 } /* Keyword.Pseudo */
+				.kr { color: #006699; font-weight: bold } /* Keyword.Reserved */
+				.kt { color: #007788; font-weight: bold } /* Keyword.Type */
+				.m { color: #FF6600 } /* Literal.Number */
+				.s { color: #CC3300 } /* Literal.String */
+				.na { color: #330099 } /* Name.Attribute */
+				.nb { color: #336666 } /* Name.Builtin */
+				.nc { color: #00AA88; font-weight: bold } /* Name.Class */
+				.no { color: #336600 } /* Name.Constant */
+				.nd { color: #9999FF } /* Name.Decorator */
+				.ni { color: #999999; font-weight: bold } /* Name.Entity */
+				.ne { color: #CC0000; font-weight: bold } /* Name.Exception */
+				.nf { color: #CC00FF } /* Name.Function */
+				.nl { color: #9999FF } /* Name.Label */
+				.nn { color: #00CCFF; font-weight: bold } /* Name.Namespace */
+				.nt { color: #330099; font-weight: bold } /* Name.Tag */
+				.nv { color: #003333 } /* Name.Variable */
+				.ow { color: #000000; font-weight: bold } /* Operator.Word */
+				.w { color: #bbbbbb } /* Text.Whitespace */
+				.mb { color: #FF6600 } /* Literal.Number.Bin */
+				.mf { color: #FF6600 } /* Literal.Number.Float */
+				.mh { color: #FF6600 } /* Literal.Number.Hex */
+				.mi { color: #FF6600 } /* Literal.Number.Integer */
+				.mo { color: #FF6600 } /* Literal.Number.Oct */
+				.sa { color: #CC3300 } /* Literal.String.Affix */
+				.sb { color: #CC3300 } /* Literal.String.Backtick */
+				.sc { color: #CC3300 } /* Literal.String.Char */
+				.dl { color: #CC3300 } /* Literal.String.Delimiter */
+				.sd { color: #CC3300; font-style: italic } /* Literal.String.Doc */
+				.s2 { color: #CC3300 } /* Literal.String.Double */
+				.se { color: #CC3300; font-weight: bold } /* Literal.String.Escape */
+				.sh { color: #CC3300 } /* Literal.String.Heredoc */
+				.si { color: #AA0000 } /* Literal.String.Interpol */
+				.sx { color: #CC3300 } /* Literal.String.Other */
+				.sr { color: #33AAAA } /* Literal.String.Regex */
+				.s1 { color: #CC3300 } /* Literal.String.Single */
+				.ss { color: #FFCC33 } /* Literal.String.Symbol */
+				.bp { color: #336666 } /* Name.Builtin.Pseudo */
+				.fm { color: #CC00FF } /* Name.Function.Magic */
+				.vc { color: #003333 } /* Name.Variable.Class */
+				.vg { color: #003333 } /* Name.Variable.Global */
+				.vi { color: #003333 } /* Name.Variable.Instance */
+				.vm { color: #003333 } /* Name.Variable.Magic */
+				.il { color: #FF6600 } /* Literal.Number.Integer.Long */
+				table {
+						  font-family: verdana,arial,sans-serif;
+						  font-size:11px;
+						  color:#333333;
+						  border-width: 1px;
+						  border-color: #999999;
+						  border-collapse: collapse;
+						  }
+				th {
+					 background:#b5cfd2 url('cell-blue.jpg');
+					 border-width: 1px;
+					 padding: 8px;
+					 border-style: solid;
+					 border-color: #999999;
+					 }
+				td {
+					 background:#dcddc0 url('cell-grey.jpg');
+					 border-width: 1px;
+					 padding: 8px;
+					 border-style: solid;
+					 border-color: #999999;
+					 }
+		</style>
+		</head>
+		<body>
+				%s
+		</body>
+		</html>
+		"""
 		if pre_rendered_html is None:
-			ret = markdown2.markdown(mdstr, extras=extras)
+			clean_one = mdstr.replace('\\(', '$').replace('\\)', '$').replace('\\[', '$').replace('\\]', '$')
+			clean_two = re.sub(
+				r'\$(.*?)\$',
+				lambda m: '$' + re.sub(r'[\n\t ]+', '', m.group(1)) + '$',
+				clean_one,
+				flags=re.DOTALL,
+			)
+			clean_three = re.sub(r'\|(\n(\t)*\n(\t)*)\|', '|\n|', clean_two)
+			ret = markdown2.markdown(clean_three, extras=extras)
 		else:
 			ret = pre_rendered_html
-		return html % ret
+		middlehtml = html % ret
+		font_family = getattr(self, "_current_font_family", None) or self._resolve_font_family()
+		font_size = getattr(self, "_current_font_size", None) or self._read_font_size()
+		html_content = """
+		<!DOCTYPE html>
+		<html lang="en">
+		<head>
+				<style>
+					 html, body {
+						  margin: 0;
+						  font-size: %dpx;
+						  font-family: "%s";
+						  padding: 0;
+						  background-color: #F3F2EE;
+					 }
+				</style>
+				<meta charset="UTF-8">
+				<meta name="viewport" content="width=device-width, initial-scale=1.0">
+				<script
+					 src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-MML-AM_CHTML">
+				</script>	
+		</head>
+		<body>
+				%s
+				<script type='text/x-mathjax-config'>
+				MathJax.Hub.Config({
+					 displayAlign: 'left',
+					 displayIndent: '4em',
+					 tex2jax: {
+						  inlineMath: [['$','$'], ['\\\\(','\\\\)']],
+						  displayMath: [['$$','$$'], ['\\[','\\]']]
+					 },
+					 TeX:{
+						  equationNumbers:{
+								autoNumber:"AMS"
+						  }
+					 }
+				});
+				</script>
+		</body>
+		</html>
+		""" % (font_size, font_family, middlehtml)
+		return html_content
 
 class window4(QWidget):  # Customization settings
 	def __init__(self):
@@ -4304,11 +4645,7 @@ class window4(QWidget):  # Customization settings
 		if font_family == '0':
 			font_path = BasePath + "chillduanheisong_widelight.otf"  # 替换为你自己的字体文件路径
 			font_family = self.load_font(font_path)
-		w3.setStyleSheet(f'''
-				QTextEdit{{
-					font: {dfontsize}pt {font_family};
-				}}
-			''')
+		w3.set_textedit_font(dfontsize, font_family)
 		sld.valueChanged[int].connect(self.value_change)
 		self.lbl2 = QLabel(str(dfontsize) + " ", self)
 		wid2 = QWidget()
@@ -4475,11 +4812,7 @@ class window4(QWidget):  # Customization settings
 		if targetfont == 'Default font':
 			font_path = BasePath + "chillduanheisong_widelight.otf"  # 替换为你自己的字体文件路径
 			targetfont = self.load_font(font_path)
-		w3.setStyleSheet(f'''
-			QTextEdit{{
-				font: {value}pt {targetfont};
-			}}
-		''')
+		w3.set_textedit_font(value, targetfont)
 		with open(BasePath + 'fs.txt', 'w', encoding='utf-8') as f0:
 			f0.write(str(value))
 
@@ -4490,30 +4823,18 @@ class window4(QWidget):  # Customization settings
 			if targetfont == '0':
 				font_path = BasePath + "chillduanheisong_widelight.otf"  # 替换为你自己的字体文件路径
 				targetfont = self.load_font(font_path)
-			w3.setStyleSheet(f'''
-				QTextEdit{{
-					font: {targetsize}pt {targetfont};
-				}}
-			''')
+			w3.set_textedit_font(targetsize, targetfont)
 		if i == 1:
 			targetsize = int(self.lbl2.text())
 			font_path = BasePath + "chillduanheisong_widelight.otf"  # 替换为你自己的字体文件路径
 			targetfont = self.load_font(font_path)
-			w3.setStyleSheet(f'''
-				QTextEdit{{
-					font: {targetsize}pt {targetfont};
-				}}
-			''')
+			w3.set_textedit_font(targetsize, targetfont)
 			with open(BasePath + 'lastused.txt', 'w', encoding='utf-8') as f0:
 				f0.write('0')
 		if i != 0 and i != 1:
 			targetsize = int(self.lbl2.text())
 			targetfont = self.widget1.itemText(i)
-			w3.setStyleSheet(f'''
-				QTextEdit{{
-					font: {targetsize}pt {targetfont};
-				}}
-			''')
+			w3.set_textedit_font(targetsize, targetfont)
 			with open(BasePath + 'lastused.txt', 'w', encoding='utf-8') as f0:
 				f0.write(targetfont)
 
@@ -4608,6 +4929,16 @@ style_sheet_ori = '''
 		color: #000000;
 		font: 14pt Times New Roman;
 }
+	QFrame#webFrame{
+		border: 1px solid grey;
+		border-radius:4px;
+		padding: 0px;
+		background-clip: border;
+		background-color: #F3F2EE;
+}
+	QWebEngineView{
+		border: 0px;
+}
 	QListWidget{
         border: 1px solid grey;  
         border-radius:4px;
@@ -4643,5 +4974,5 @@ if __name__ == '__main__':
 	btna4.triggered.connect(w3.pin_a_tab)
 	w3.btn0_1.clicked.connect(w4.activate)
 	w3.btn0_2.clicked.connect(w3.toggle_notes_mode)
-	app.setStyleSheet(style_sheet_ori)
+	w3.set_textedit_font(w3._current_font_size, w3._current_font_family)
 	app.exec()
