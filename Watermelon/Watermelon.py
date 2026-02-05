@@ -13,12 +13,12 @@ import tempfile
 import traceback
 from PyQt6.QtWidgets import (QWidget, QPushButton, QApplication,
 							 QLabel, QHBoxLayout, QVBoxLayout,
-							 QSystemTrayIcon, QMenu, QComboBox, QDialog,
-							 QMenuBar, QFileDialog, QMessageBox, QLineEdit,
+							 QSystemTrayIcon, QMenu, QComboBox,
+							 QMenuBar, QFileDialog, QLineEdit,
 							 QSplitter, QTextEdit, QListWidget, QCheckBox, QSlider,
-							 QFrame)
-from PyQt6.QtCore import Qt, QPropertyAnimation, QRect, QTimer, QThread, pyqtSignal, QSize
-from PyQt6.QtGui import QAction, QIcon, QColor, QFontDatabase, QPixmap, QCursor, QGuiApplication
+							 QFrame, QGraphicsDropShadowEffect, QDialog, QGraphicsOpacityEffect)
+from PyQt6.QtCore import Qt, QPropertyAnimation, QRect, QTimer, QThread, pyqtSignal, QSize, QEvent, QRectF, QEventLoop, pyqtSlot, QParallelAnimationGroup, QSequentialAnimationGroup, QEasingCurve
+from PyQt6.QtGui import QAction, QIcon, QColor, QFontDatabase, QPixmap, QCursor, QGuiApplication, QPainter, QPen, QPainterPath, QPalette, QFont, QSurfaceFormat, QBrush, QLinearGradient, QImage, QMouseEvent
 import PyQt6.QtGui
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 import sys
@@ -36,18 +36,38 @@ from pathlib import Path
 import markdown2
 from datetime import datetime
 import matplotlib.font_manager
-from PIL import Image, ImageQt
+from PIL import Image, ImageQt, ImageFilter
 import time
 try:
-	from AppKit import NSWorkspace
+	from AppKit import NSWorkspace, NSColor
 except ImportError:
 	NSWorkspace = None
+	NSColor = None
+try:
+	from Foundation import NSUserDefaults, NSSelectorFromString, NSDistributedNotificationCenter, NSObject
+	import objc
+except Exception:
+	NSUserDefaults = None
+	NSSelectorFromString = None
+	NSDistributedNotificationCenter = None
+	NSObject = None
+	objc = None
 
 app = QApplication(sys.argv)
 app.setQuitOnLastWindowClosed(False)
 
 BasePath = '/Applications/Watermelon.app/Contents/Resources/'
 #BasePath = ''
+
+VERSION = "2.2.2"
+NAME = 'Watermelon'
+
+os.environ["QT_QUICK_BACKEND"] = "metal"
+
+fmt = QSurfaceFormat()
+fmt.setSamples(8)  # 打开 MSAA 多重采样抗锯齿
+QSurfaceFormat.setDefaultFormat(fmt)
+
 NOTES_CACHE_PATH = os.path.join(BasePath, "notes_cache.json")
 DEBUG_LAYOUT = False
 
@@ -106,23 +126,1099 @@ file_menu = sysmenu.addMenu("&Actions")
 file_menu.addAction(btna4)
 
 
-class window_about(QWidget):  # 增加说明页面(About)
+def is_dark_theme(app):
+	if NSUserDefaults is None:
+		return False
+	defaults = NSUserDefaults.standardUserDefaults()
+	style = defaults.stringForKey_("AppleInterfaceStyle")
+	return style == "Dark"
+
+
+def get_accent_color_hex():
+	try:
+		if NSColor is None:
+			return "#0A84FF"
+		accent = NSColor.controlAccentColor()
+		rgb = accent.colorUsingColorSpaceName_("NSCalibratedRGBColorSpace")
+		if rgb:
+			r = int(rgb.redComponent() * 255)
+			g = int(rgb.greenComponent() * 255)
+			b = int(rgb.blueComponent() * 255)
+			return f"#{r:02X}{g:02X}{b:02X}"
+	except Exception:
+		pass
+	return "#0A84FF"
+
+
+def set_light_palette(app):
+	palette = QPalette()
+	palette.setColor(QPalette.ColorRole.Window, QColor(255, 255, 255))
+	palette.setColor(QPalette.ColorRole.WindowText, QColor(0, 0, 0))
+	palette.setColor(QPalette.ColorRole.Base, QColor(255, 255, 255))
+	palette.setColor(QPalette.ColorRole.Text, QColor(0, 0, 0))
+	palette.setColor(QPalette.ColorRole.Button, QColor(240, 240, 240))
+	palette.setColor(QPalette.ColorRole.ButtonText, QColor(0, 0, 0))
+	app.setPalette(palette)
+
+
+def set_dark_palette(app):
+	palette = QPalette()
+	palette.setColor(QPalette.ColorRole.Window, QColor(30, 30, 30))
+	palette.setColor(QPalette.ColorRole.WindowText, QColor(220, 220, 220))
+	palette.setColor(QPalette.ColorRole.Base, QColor(40, 40, 40))
+	palette.setColor(QPalette.ColorRole.Text, QColor(220, 220, 220))
+	palette.setColor(QPalette.ColorRole.Button, QColor(50, 50, 50))
+	palette.setColor(QPalette.ColorRole.ButtonText, QColor(220, 220, 220))
+	app.setPalette(palette)
+
+
+def _read_bg_pref():
+	bg_pref_file = BasePath + 'bg_color.txt'
+	try:
+		if os.path.exists(bg_pref_file):
+			pref = codecs.open(bg_pref_file, 'r', encoding='utf-8').read().strip()
+			if pref in ('cream', 'white'):
+				return pref
+	except Exception:
+		pass
+	return 'white'
+
+
+def _resolve_bg_color(pref, dark_mode):
+	if pref == 'cream':
+		return '#454540' if dark_mode else '#F3F2EE'
+	return '#3A3A3A' if dark_mode else '#FFFFFF'
+
+
+def _apply_window_palette(window, dark_mode):
+	if window is None:
+		return
+	p = window.palette()
+	p.setColor(window.backgroundRole(), QColor('#2D2D2D' if dark_mode else '#ECECEC'))
+	window.setPalette(p)
+
+
+def _apply_mac_button_theme():
+	for widget in QApplication.allWidgets():
+		if isinstance(widget, MacNormalButton):
+			widget.update_theme()
+
+
+# def _apply_dark_combo_style(combo):
+# 	combo.setFixedHeight(22)
+# 	combo.setStyleSheet("""
+# 		QComboBox {
+# 			border: 1px solid transparent;
+# 			background-color: #404145;
+# 			border-radius: 6px;
+# 			padding: 1px 22px 1px 8px;
+# 			color: #FFFFFF;
+# 		}
+# 		QComboBox:hover {
+# 			background-color: #4A4B4F;
+# 		}
+		
+# 		QComboBox QAbstractItemView {
+# 			background-color: #404145;
+# 			color: #FFFFFF;
+# 			selection-background-color: #4A4B4F;
+# 			border: 1px solid #2F3033;
+# 			border-radius: 6px; 
+# 		}
+		
+# 	""")
+
+
+def apply_bg_color_from_pref(target=None):
+	if target is None:
+		target = globals().get("w3")
+	if target is None:
+		return
+	pref = _read_bg_pref()
+	bg_color = _resolve_bg_color(pref, is_dark_theme(app))
+	target.set_bg_color(bg_color)
+
+
+if NSObject is not None and objc is not None:
+	class ThemeObserver(NSObject):
+		def initWithApp_(self, app):
+			self = objc.super(ThemeObserver, self).init()
+			self.app = app
+			return self
+
+		def themeChanged_(self, notification):
+			apply_theme(self.app)
+else:
+	class ThemeObserver:
+		pass
+
+
+def install_theme_observer(app):
+	if NSDistributedNotificationCenter is None or NSSelectorFromString is None or NSObject is None or objc is None:
+		return None
+	try:
+		observer = ThemeObserver.alloc().initWithApp_(app)
+		center = NSDistributedNotificationCenter.defaultCenter()
+		center.addObserver_selector_name_object_(
+			observer,
+			NSSelectorFromString("themeChanged:"),
+			"AppleInterfaceThemeChangedNotification",
+			None
+		)
+		return observer
+	except Exception:
+		return None
+
+
+def apply_theme(app):
+	dark_mode = is_dark_theme(app)
+	if dark_mode:
+		set_dark_palette(app)
+		app.setStyleSheet(style_sheet_dark)
+	else:
+		set_light_palette(app)
+		app.setStyleSheet(style_sheet_ori)
+	target = globals().get("w3")
+	if target is not None:
+		_apply_window_palette(target, dark_mode)
+		apply_bg_color_from_pref(target)
+		try:
+			target.set_textedit_font(target._current_font_size, target._current_font_family)
+		except Exception:
+			pass
+	_apply_mac_button_theme()
+	for widget in app.topLevelWidgets():
+		widget.update()
+
+
+# Initialize theme
+if is_dark_theme(app):
+	set_dark_palette(app)
+else:
+	set_light_palette(app)
+
+theme_observer = install_theme_observer(app)
+
+
+def is_newer_version(latest: str, current: str) -> bool:
+	# 'v0.0.12' vs 'v0.0.11'
+	def parse(v: str):
+		return [int(x) for x in v.lstrip('vV').split('.')]
+	try:
+		return parse(latest) > parse(current)
+	except Exception:
+		return False
+
+
+class UpdateCheckWorker(QThread):
+	update_available = pyqtSignal(str)  # latest version, e.g., 'v0.0.13'
+	checked_ok = pyqtSignal(str)		# latest version (even if not newer),用于日志或状态
+	checked_error = pyqtSignal(str)	 # error message
+
+	def __init__(self, current_version: str, interval_seconds: int = 86400, parent=None):
+		super().__init__(parent)
+		self._running = True
+		self.current_version = current_version  # e.g., 'v0.0.12'
+		self.interval_seconds = interval_seconds
+
+	def stop(self):
+		self._running = False
+
+	def run(self):
+		# 循环：只要应用在运行，就每隔 interval 检查一次
+		while self._running:
+			try:
+				text = WindowUpdate.fetch_latest_version_text()
+				latest = WindowUpdate.extract_latest_tag(text) if text else None
+				if latest:
+					self.checked_ok.emit(latest)
+					if is_newer_version(latest, 'v' + VERSION):
+						# 通知主线程有新版本
+						self.update_available.emit(latest)
+				else:
+					self.checked_error.emit("No version tag found")
+			except Exception as e:
+				self.checked_error.emit(str(e))
+
+			# 可中断的“休眠”24小时
+			for _ in range(self.interval_seconds):
+				if not self._running:
+					return
+				self.msleep(1000)
+
+
+def is_macos_16_or_higher():
+	"""检测是否为 macOS 16 或更高版本"""
+	import platform
+	if platform.system() != 'Darwin':
+		return False
+	try:
+		version = platform.mac_ver()[0]
+		major = int(version.split('.')[0])
+		return major >= 16
+	except Exception:
+		return False
+
+
+class GlassButton(QPushButton):
+	singleClicked = pyqtSignal(str)
+	rightClicked = pyqtSignal(str)
+
+	def __init__(self, text="Glass Button", radius=30, bg_color=(255, 255, 255, 20), shadow_color=(0, 0, 0, 80), highlight_color=(255, 255, 255, 80), icon_path=None, momentary=False, parent=None):
+		super().__init__(text, parent)
+		self.radius = radius
+		self.momentary = momentary  # True: 按下变灰松开恢复, False: toggle模式
+		self.bg_color = QColor(*bg_color)
+		self.default_bg_color = QColor(*bg_color)
+		self.deep_bg_color = QColor(
+			max(0, self.bg_color.red() - 40),
+			max(0, self.bg_color.green() - 40),
+			max(0, self.bg_color.blue() - 40),
+			min(255, self.bg_color.alpha() + 60)
+		)
+		# hover 时变灰的颜色
+		self.hover_bg_color = QColor(
+			max(0, self.bg_color.red() - 20),
+			max(0, self.bg_color.green() - 20),
+			max(0, self.bg_color.blue() - 20),
+			min(255, self.bg_color.alpha() + 30)
+		)
+		self.shadow_color = QColor(*shadow_color)
+		self.highlight_color = QColor(*highlight_color)
+		self._icon_pixmap = None
+		if icon_path:
+			self.setIconPath(icon_path)
+		self.setStyleSheet("""
+			background-color: transparent;
+			border: none;
+			color: white;
+			font-size: 16px;
+			padding: 8px 24px;
+		""")
+		if not is_macos_16_or_higher():
+			self.outer_shadow = QGraphicsDropShadowEffect(self)
+			self.outer_shadow.setBlurRadius(12)
+			self.outer_shadow.setColor(self.shadow_color)
+			self.outer_shadow.setOffset(0, 6)
+			self.setGraphicsEffect(self.outer_shadow)
+		self.pressed_state = False
+		self.blur_bg = None
+		self.is_selected = False
+		self.is_hovered = False
+
+	def setIconPath(self, path):
+		"""设置图标路径"""
+		if path:
+			self._icon_pixmap = QPixmap(path)
+		else:
+			self._icon_pixmap = None
+		self.update()
+
+	def setRadius(self, radius):
+		self.radius = radius
+		self.update()
+
+	def enterEvent(self, event):
+		self.is_hovered = True
+		self.update()
+		super().enterEvent(event)
+
+	def leaveEvent(self, event):
+		self.is_hovered = False
+		self.update()
+		super().leaveEvent(event)
+
+	def isInRoundRect(self, pos):
+		rect = QRectF(self.rect()).adjusted(2, 2, -2, -2)
+		path = QPainterPath()
+		path.addRoundedRect(rect, self.radius, self.radius)
+		return path.contains(pos)
+
+	def mousePressEvent(self, event: QMouseEvent):
+		if self.isInRoundRect(event.position()):
+			if event.button() == Qt.MouseButton.LeftButton:
+				if self.momentary:
+					# momentary 模式：按下时变灰
+					self.pressed_state = True
+					self.update()
+				else:
+					# toggle 模式：原有逻辑
+					if self.text() == "Clear" or self.text() == "Tag!" or self.text() == "Close":
+						self.singleClicked.emit(self.text())
+					elif not self.is_selected:
+						self.setSelected(True)
+						self.singleClicked.emit(self.text())
+			elif event.button() == Qt.MouseButton.RightButton:
+				if not self.momentary and self.is_selected:
+					self.setSelected(False)
+					self.rightClicked.emit(self.text())
+		super().mousePressEvent(event)
+
+	def mouseReleaseEvent(self, event: QMouseEvent):
+		if self.isInRoundRect(event.position()):
+			if event.button() == Qt.MouseButton.LeftButton:
+				if self.momentary:
+					# momentary 模式：松开时恢复
+					self.pressed_state = False
+					self.update()
+				else:
+					# toggle 模式：原有逻辑
+					self.pressed_state = False
+					if self.text() in ("Clear", "Tag!", "Close"):
+						self.setSelected(False)
+					self.update()
+		super().mouseReleaseEvent(event)
+
+	def setSelected(self, selected: bool):
+		self.is_selected = selected
+		self.update()
+
+	def _getCurrentBgColor(self):
+		"""根据当前状态获取背景颜色"""
+		if self.pressed_state or self.is_selected:
+			return self.deep_bg_color
+		elif self.is_hovered:
+			return self.hover_bg_color
+		else:
+			return self.default_bg_color
+
+	def paintEvent(self, event):
+		painter = QPainter(self)
+		painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+		painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+		rect = QRectF(0, 0, self.width(), self.height()).adjusted(2, 2, -2, -2)
+		path = QPainterPath()
+		path.addRoundedRect(rect, self.radius, self.radius)
+		center_y = rect.center().y()
+
+		current_bg = self._getCurrentBgColor()
+		painter.setBrush(QBrush(current_bg))
+		painter.setPen(QPen(QColor(255, 255, 255, 50), 1))
+		painter.drawPath(path)
+		if not is_macos_16_or_higher():
+			if self.blur_bg is None or self.blur_bg.size() != self.size():
+				tmp_img = QImage(self.size(), QImage.Format.Format_ARGB32)
+				tmp_img.fill(Qt.GlobalColor.transparent)
+				tmp_painter = QPainter(tmp_img)
+				tmp_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+				tmp_painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+				tmp_painter.setBrush(QBrush(QColor(255, 255, 255, 20)))
+				tmp_painter.setPen(QPen(QColor(255, 255, 255, 50), 1))
+				tmp_painter.drawPath(path)
+				tmp_painter.end()
+				pil_img = Image.fromqimage(tmp_img)
+				pil_img = pil_img.filter(ImageFilter.GaussianBlur(radius=2))
+				self.blur_bg = QImage(
+					pil_img.tobytes("raw", "RGBA"),
+					pil_img.width,
+					pil_img.height,
+					QImage.Format.Format_ARGB32
+				)
+			painter.drawImage(0, 0, self.blur_bg)
+
+		if not self.pressed_state:
+			path = QPainterPath()
+			path.moveTo(rect.left()+self.radius, rect.bottom())
+			path.lineTo(rect.right()-self.radius, rect.bottom())
+			path.arcTo(rect.right() - 2 * self.radius, rect.bottom() - 2 * self.radius,
+					   2 * self.radius, 2 * self.radius, 270, 90)
+			path.lineTo(rect.right(), center_y)
+			path.lineTo(rect.left(), center_y)
+			path.arcTo(rect.left(), rect.bottom() - 2 * self.radius,
+					   2 * self.radius, 2 * self.radius, 180, 90)
+			path.closeSubpath()
+			gradient = QLinearGradient(rect.left(), rect.bottom(),
+									   rect.left(), center_y)
+			gradient.setColorAt(0, self.highlight_color)
+			gradient.setColorAt(1, QColor(255, 255, 255, 0))
+			painter.setPen(QPen(QBrush(gradient), 2))
+			painter.setBrush(Qt.BrushStyle.NoBrush)
+			painter.drawPath(path)
+
+		# 绘制图标或文字
+		if self._icon_pixmap and not self._icon_pixmap.isNull():
+			# 绘制图标，居中显示
+			icon_size = min(rect.width(), rect.height()) * 0.6
+			scaled_pixmap = self._icon_pixmap.scaled(
+				int(icon_size), int(icon_size),
+				Qt.AspectRatioMode.KeepAspectRatio,
+				Qt.TransformationMode.SmoothTransformation
+			)
+			icon_x = rect.center().x() - scaled_pixmap.width() / 2
+			icon_y = rect.center().y() - scaled_pixmap.height() / 2
+			painter.drawPixmap(int(icon_x), int(icon_y), scaled_pixmap)
+		else:
+			painter.setPen(QPen(QColor(255, 255, 255, 255)))
+			painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.text())
+
+
+class WhiteButton(QPushButton):
+	def __init__(self, text, parent=None):
+		super().__init__(text, parent)
+		self.setFixedHeight(30)
+		self.setStyleSheet("""
+		QPushButton {
+			background-color: white;
+			color: #444;
+			border: none;
+			border-radius: 15px;
+			font-size: 13px;
+			padding: 5px 20px;
+		}
+		QPushButton:hover {
+			background-color: #f5f5f5;
+		}
+		""")
+
+		shadow = QGraphicsDropShadowEffect(self)
+		shadow.setBlurRadius(40)
+		shadow.setXOffset(0)
+		shadow.setYOffset(0)
+		shadow.setColor(QColor(0, 0, 0, 40))  # 半透明黑色阴影
+		self.setGraphicsEffect(shadow)
+
+
+class MacNormalButton(QPushButton):
+	def __init__(self, text, parent=None, always_dark=False):
+		super().__init__(text, parent)
+		self.setAutoDefault(False)
+		self.setFixedHeight(22)
+		self._always_dark = bool(always_dark)
+		self._alert = False
+		self._updating_style = False
+		self.update_theme()
+
+	def update_theme(self):
+		if self._updating_style:
+			return
+		self._updating_style = True
+		try:
+			if self._alert:
+				bg = "#FF4D4D"
+				bg_hover = "#FF6666"
+				bg_pressed = "#CC3D3D"
+				bg_disabled = "#E6E6E6"
+				text = "#FFFFFF"
+				text_disabled = "#777777"
+			else:
+				dark = self._always_dark or is_dark_theme(app)
+				if dark:
+					bg = "#404145"
+					bg_hover = "#4A4B4F"
+					bg_pressed = "#343538"
+					bg_disabled = "#2F3033"
+					text = "#FFFFFF"
+					text_disabled = "#777777"
+				else:
+					bg = "#E7E7E7"
+					bg_hover = "#EEEEEE"
+					bg_pressed = "#DCDCDC"
+					bg_disabled = "#E1E1E1"
+					text = "#111111"
+					text_disabled = "#777777"
+			self.setStyleSheet(f"""
+				QPushButton {{
+					border: 1px solid transparent;
+					background-color: {bg};
+					border-radius: 6px;
+					padding: 1px 8px;
+					color: {text};
+				}}
+				QPushButton:hover {{
+					background-color: {bg_hover};
+				}}
+				QPushButton:pressed {{
+					background-color: {bg_pressed};
+				}}
+				QPushButton:disabled {{
+					background-color: {bg_disabled};
+					color: {text_disabled};
+				}}
+			""")
+		finally:
+			self._updating_style = False
+
+	def changeEvent(self, event):
+		super().changeEvent(event)
+		if self._updating_style:
+			return
+		if event.type() in (
+			QEvent.Type.PaletteChange,
+			QEvent.Type.ApplicationPaletteChange,
+		):
+			self.update_theme()
+
+	def set_alert(self, enabled):
+		enabled = bool(enabled)
+		if self._alert == enabled:
+			return
+		self._alert = enabled
+		self.update_theme()
+
+
+class DropdownPopup(QWidget):
+	"""暗色主题的弹出列表窗口，带圆角、hover效果，失去焦点自动关闭"""
+	item_selected = pyqtSignal(int)  # 选中项目时发出信号，传递索引
+
+	def __init__(self, parent_button):
+		super().__init__(None)
+		self.parent_button = parent_button
+		self.items = []
+		self.current_index = -1
+		self.hovered_index = -1
+		self.item_height = 28
+		self.padding = 6
+
+		# 设置窗口属性 - 使用 Popup 类型确保点击外部自动关闭
+		self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+		self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+		self.setMouseTracking(True)
+
+	def set_items(self, items):
+		"""设置列表项"""
+		self.items = list(items)
+		self._update_size()
+
+	def set_current_index(self, index):
+		"""设置当前选中项"""
+		if 0 <= index < len(self.items):
+			self.current_index = index
+		else:
+			self.current_index = -1
+		self.update()
+
+	def _update_size(self):
+		"""根据内容更新窗口大小"""
+		if not self.items:
+			return
+		# 计算所需宽度（至少与父按钮一样宽）
+		fm = self.fontMetrics()
+		max_width = self.parent_button.width()
+		for item in self.items:
+			text_width = fm.horizontalAdvance(item) + 24
+			max_width = max(max_width, text_width)
+
+		height = len(self.items) * self.item_height + self.padding * 2
+		max_height = 400  # 最大高度限制
+		if height > max_height:
+			height = max_height
+		self.setFixedSize(max_width, height)
+
+	def show_above_button(self):
+		"""在父按钮上方显示弹出窗口"""
+		if not self.items:
+			return
+		self._update_size()
+		# 获取按钮的全局位置，在上方显示
+		btn_pos = self.parent_button.mapToGlobal(self.parent_button.rect().topLeft())
+		# 弹出窗口显示在按钮上方，需要减去弹出窗口的高度
+		self.move(btn_pos.x(), btn_pos.y() - self.height() - 2)
+		self.show()
+		self.activateWindow()  # 确保窗口被激活
+
+	def paintEvent(self, event):
+		painter = QPainter(self)
+		painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+		# 绘制背景（带圆角和半透明效果）
+		bg_path = QPainterPath()
+		bg_path.addRoundedRect(QRectF(0, 0, self.width(), self.height()), 8, 8)
+		painter.fillPath(bg_path, QColor(45, 45, 48, 245))
+
+		# 绘制边框
+		painter.setPen(QPen(QColor(70, 70, 75), 1))
+		painter.drawPath(bg_path)
+
+		# 绘制列表项
+		y = self.padding
+		for i, item in enumerate(self.items):
+			item_rect = QRectF(self.padding, y, self.width() - self.padding * 2, self.item_height)
+
+			# 绘制hover/选中背景
+			if i == self.hovered_index:
+				hover_path = QPainterPath()
+				hover_path.addRoundedRect(item_rect, 4, 4)
+				painter.fillPath(hover_path, QColor(80, 80, 85))
+			elif i == self.current_index:
+				select_path = QPainterPath()
+				select_path.addRoundedRect(item_rect, 4, 4)
+				painter.fillPath(select_path, QColor(0, 122, 255, 100))
+
+			# 绘制文本
+			painter.setPen(QColor(240, 240, 240))
+			text_rect = item_rect.adjusted(8, 0, -8, 0)
+			painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, item)
+
+			y += self.item_height
+			if y > self.height() - self.padding:
+				break
+
+	def mouseMoveEvent(self, event):
+		# 计算鼠标所在的项目索引
+		y = event.position().y() - self.padding
+		index = int(y // self.item_height)
+		if 0 <= index < len(self.items):
+			if self.hovered_index != index:
+				self.hovered_index = index
+				self.update()
+		else:
+			if self.hovered_index != -1:
+				self.hovered_index = -1
+				self.update()
+
+	def mousePressEvent(self, event):
+		if event.button() == Qt.MouseButton.LeftButton:
+			y = event.position().y() - self.padding
+			index = int(y // self.item_height)
+			if 0 <= index < len(self.items):
+				self.current_index = index
+				self.item_selected.emit(index)
+				self.hide()
+
+	def leaveEvent(self, event):
+		self.hovered_index = -1
+		self.update()
+
+	def focusOutEvent(self, event):
+		self.hide()
+
+
+class DropdownButton(QPushButton):
+	"""自定义下拉按钮，点击显示弹出列表"""
+	currentIndexChanged = pyqtSignal(int)  # 兼容 QComboBox 的信号
+
+	def __init__(self, parent=None, always_dark=True):
+		super().__init__(parent)
+		self.setAutoDefault(False)
+		self._items = []
+		self._item_data = []  # 存储每个项目的附加数据
+		self._current_index = -1
+		self._always_dark = always_dark
+		self._enabled = True
+		self._signals_blocked = False
+
+		# 创建弹出窗口
+		self._popup = DropdownPopup(self)
+		self._popup.item_selected.connect(self._on_item_selected)
+
+		self.clicked.connect(self._show_popup)
+		self._update_style()
+
+	def _update_style(self):
+		"""更新按钮样式"""
+		if self._enabled:
+			bg = "#404145"
+			bg_hover = "#4A4B4F"
+			bg_pressed = "#343538"
+			text = "#FFFFFF"
+		else:
+			bg = "#2F3033"
+			bg_hover = "#2F3033"
+			bg_pressed = "#2F3033"
+			text = "#777777"
+
+		self.setStyleSheet(f"""
+			QPushButton {{
+				border: 1px solid transparent;
+				background-color: {bg};
+				border-radius: 6px;
+				padding: 1px 8px;
+				color: {text};
+				text-align: left;
+			}}
+			QPushButton:hover {{
+				background-color: {bg_hover};
+			}}
+			QPushButton:pressed {{
+				background-color: {bg_pressed};
+			}}
+			QPushButton::menu-indicator {{
+				width: 0px;
+			}}
+		""")
+
+	def _show_popup(self):
+		"""显示或隐藏弹出窗口"""
+		if not self._enabled or not self._items:
+			return
+		# 如果弹出窗口已显示，则关闭它
+		if self._popup.isVisible():
+			self._popup.hide()
+			return
+		self._popup.set_items(self._items)
+		self._popup.set_current_index(self._current_index)
+		self._popup.show_above_button()
+
+	def _on_item_selected(self, index):
+		"""处理弹出窗口中的项目选择"""
+		if index != self._current_index:
+			self._current_index = index
+			self._update_text()
+			if not self._signals_blocked:
+				self.currentIndexChanged.emit(index)
+
+	def _update_text(self):
+		"""更新按钮显示的文本"""
+		if 0 <= self._current_index < len(self._items):
+			text = self._items[self._current_index]
+			# 如果文本太长，截断并添加省略号
+			fm = self.fontMetrics()
+			available_width = self.width() - 20
+			if fm.horizontalAdvance(text) > available_width:
+				while fm.horizontalAdvance(text + "...") > available_width and len(text) > 0:
+					text = text[:-1]
+				text += "..."
+			self.setText(text)
+		else:
+			self.setText("")
+
+	def resizeEvent(self, event):
+		super().resizeEvent(event)
+		self._update_text()
+
+	# 兼容 QComboBox 的 API
+	def addItem(self, text, data=None):
+		"""添加单个项目"""
+		self._items.append(text)
+		self._item_data.append(data)
+		if self._current_index == -1:
+			self.setCurrentIndex(0)
+
+	def addItems(self, texts):
+		"""添加多个项目"""
+		for text in texts:
+			self._items.append(text)
+			self._item_data.append(None)
+		if self._current_index == -1 and self._items:
+			self.setCurrentIndex(0)
+
+	def clear(self):
+		"""清空所有项目"""
+		self._items = []
+		self._item_data = []
+		self._current_index = -1
+		self.setText("")
+
+	def count(self):
+		"""返回项目数量"""
+		return len(self._items)
+
+	def currentIndex(self):
+		"""返回当前选中的索引"""
+		return self._current_index
+
+	def setCurrentIndex(self, index):
+		"""设置当前选中的索引"""
+		if 0 <= index < len(self._items):
+			old_index = self._current_index
+			self._current_index = index
+			self._update_text()
+			if old_index != index and not self._signals_blocked:
+				self.currentIndexChanged.emit(index)
+		elif index == -1 or not self._items:
+			self._current_index = -1
+			self.setText("")
+
+	def currentText(self):
+		"""返回当前选中项的文本"""
+		if 0 <= self._current_index < len(self._items):
+			return self._items[self._current_index]
+		return ""
+
+	def itemText(self, index):
+		"""返回指定索引的文本"""
+		if 0 <= index < len(self._items):
+			return self._items[index]
+		return ""
+
+	def itemData(self, index):
+		"""返回指定索引的附加数据"""
+		if 0 <= index < len(self._item_data):
+			return self._item_data[index]
+		return None
+
+	def setItemData(self, index, data):
+		"""设置指定索引的附加数据"""
+		if 0 <= index < len(self._item_data):
+			self._item_data[index] = data
+
+	def setEnabled(self, enabled):
+		"""设置是否启用"""
+		self._enabled = enabled
+		super().setEnabled(enabled)
+		self._update_style()
+
+	def blockSignals(self, block):
+		"""阻止信号发射"""
+		self._signals_blocked = block
+		return super().blockSignals(block)
+
+
+class MacWindowButton(QPushButton):
+	def __init__(self, color, symbol, parent=None):
+		super().__init__(parent)
+		self.setFixedSize(16,16)
+		self.base_color = QColor(color)
+		self.symbol = symbol  # "x", "-", "+"
+		self.hovered = False
+		self.setStyleSheet("border: none; background: transparent;")
+
+	def enterEvent(self, event):
+		self.hovered = True
+		self.update()
+		super().enterEvent(event)
+
+	def leaveEvent(self, event):
+		self.hovered = False
+		self.update()
+		super().leaveEvent(event)
+
+	def paintEvent(self, event):
+		painter = QPainter(self)
+		painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+		painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+		# # 1. 选择底色
+		# if self.hovered:
+		#	 # hover 时用更深的颜色
+		#	 if self.symbol == "x":
+		#		 color = QColor("#BF4943")
+		#	 elif self.symbol == "-":
+		#		 color = QColor("#B29B32")
+		#	 elif self.symbol == "+":
+		#		 color = QColor("#24912D")
+		#	 else:
+		#		 color = self.base_color
+		# else:
+		#	 color = self.base_color
+		# Draw circle
+		painter.setBrush(self.base_color)
+		painter.setPen(Qt.PenStyle.NoPen)
+		painter.drawEllipse(0, 0, self.width(), self.height())
+		# Draw symbol if hovered
+		if self.hovered:
+			pen = QPen(QColor("black"))
+			pen.setWidth(2)
+			painter.setPen(pen)
+			margin = 5  # 增大 margin，叉号更小
+			if self.symbol == "x":
+				painter.drawLine(margin, margin, self.width()-margin, self.height()-margin)
+				painter.drawLine(self.width()-margin, margin, margin, self.height()-margin)
+			elif self.symbol == "-":
+				painter.drawLine(margin, self.height()//2, self.width()-margin, self.height()//2)
+			elif self.symbol == "+":
+				painter.drawLine(self.width()//2, margin, self.width()//2, self.height()-margin)
+				painter.drawLine(margin, self.height()//2, self.width()-margin, self.height()//2)
+
+
+class CustomMessageBox(QWidget):
+	def __init__(
+		self,
+		text=None,
+		parent=None,
+		icon=None,
+		buttons=("OK",),
+		default=0,
+		fixed_size=(400, 200),
+		show_close_button=True,
+	):
+		super().__init__(parent)
+		self.radius = 16
+		self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+		self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+		self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+		if fixed_size:
+			self.setFixedSize(fixed_size[0], fixed_size[1])
+		self.result = None
+		self._dialog_result = None
+		self._event_loop = None
+
+		# 拖动支持
+		self.drag_pos = None
+
+		# 关闭按钮
+		self.close_button = None
+		if show_close_button:
+			self.close_button = MacWindowButton("#FF605C", "x", self)
+			self.close_button.move(10, 10)
+			self.close_button.clicked.connect(self.reject)
+
+		# 主内容
+		self.body_layout = QVBoxLayout()
+		self.body_layout.setContentsMargins(32, 40, 32, 32)
+		self.body_layout.setSpacing(16)
+
+		# 图标
+		if icon:
+			icon_label = QLabel()
+			icon_label.setPixmap(icon.pixmap(48, 48))
+			icon_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+			self.body_layout.addWidget(icon_label)
+
+		# 文本
+		self.label = None
+		if text is not None:
+			label = QLabel(text)
+			label.setWordWrap(True)
+			label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+			label.setStyleSheet("""
+				font-size: 16px;
+				background-color: rgba(255,255,255,0);
+				border-radius: 8px;
+				padding: 8px;
+			""")
+			self.body_layout.addWidget(label, stretch=1)
+			self.label = label
+
+		# 按钮
+		self.btns = []
+		if buttons:
+			btn_layout = QHBoxLayout()
+			btn_layout.addStretch()
+			for i, btn_text in enumerate(buttons):
+				btn = WhiteButton(btn_text)
+				btn.setFixedWidth(150)
+				btn.clicked.connect(lambda checked, idx=i: self._on_btn(idx))
+				btn_layout.addWidget(btn)
+				self.btns.append(btn)
+			btn_layout.addStretch()
+			self.body_layout.addLayout(btn_layout)
+
+		self.setLayout(self.body_layout)
+		if self.btns:
+			default_idx = max(0, min(default, len(self.btns) - 1))
+			self.btns[default_idx].setFocus()
+
+	def _on_btn(self, idx):
+		self.result = idx
+		self.done(idx)
+
+	def done(self, result):
+		self.result = result
+		self._dialog_result = result
+		if self._event_loop is not None and self._event_loop.isRunning():
+			self._event_loop.quit()
+		self.close()
+
+	def accept(self):
+		self.done(1)
+
+	def reject(self):
+		self.done(-1)
+
+	def paintEvent(self, event):
+		painter = QPainter(self)
+		painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+		rect = QRectF(self.rect())
+		path = QPainterPath()
+		path.addRoundedRect(rect, self.radius, self.radius)
+		painter.setClipPath(path)
+		if is_dark_theme(self):
+			painter.fillPath(path, QColor(30, 30, 30, 245))
+		else:
+			painter.fillPath(path, QColor(255, 255, 255, 245))
+
+	def mousePressEvent(self, event):
+		if event.button() == Qt.MouseButton.LeftButton:
+			self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+			event.accept()
+
+	def mouseMoveEvent(self, event):
+		if event.buttons() == Qt.MouseButton.LeftButton and self.drag_pos is not None:
+			self.move(event.globalPosition().toPoint() - self.drag_pos)
+			event.accept()
+
+	def exec(self):
+		self.setWindowModality(Qt.WindowModality.ApplicationModal)
+		self.show()
+		self._event_loop = QEventLoop()
+		self._event_loop.exec()
+		self._event_loop = None
+		return self._dialog_result
+
+	def closeEvent(self, event):
+		if self._event_loop is not None and self._event_loop.isRunning():
+			self._event_loop.quit()
+		event.accept()
+
+
+class WindowAbout(QWidget):  # 增加说明页面(About)
 	def __init__(self):
 		super().__init__()
-		self.initUI()
+		self.radius = 16  # 圆角半径，可按 macOS 15 或 26 设置为 16~26
 
-	def initUI(self):  # 说明页面内信息
+		self.setWindowFlags(
+			Qt.WindowType.FramelessWindowHint |
+			Qt.WindowType.Window |
+			Qt.WindowType.WindowStaysOnTopHint
+		)
+		self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+		self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+
+		self.init_ui()
+
+	def init_ui(self):
 		self.setUpMainWindow()
-		self.resize(400, 410)
+		self.setFixedSize(400, 600)
 		self.center()
-		self.setWindowTitle('About')
 		self.setFocus()
-		self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
+
+	def paintEvent(self, event):
+		painter = QPainter(self)
+		painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+		painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+		rect = QRectF(self.rect())
+		path = QPainterPath()
+		path.addRoundedRect(rect, self.radius, self.radius)
+
+		painter.setClipPath(path)
+		bg_color = self.palette().color(QPalette.ColorRole.Window)
+		painter.fillPath(path, bg_color)
+
+	# 让无边框窗口可拖动
+	def mousePressEvent(self, event):
+		if event.button() == Qt.MouseButton.LeftButton:
+			self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+			event.accept()
+
+	def mouseMoveEvent(self, event):
+		if event.buttons() == Qt.MouseButton.LeftButton:
+			self.move(event.globalPosition().toPoint() - self.drag_pos)
+			event.accept()
 
 	def setUpMainWindow(self):
+		# 添加关闭按钮（仿 macOS 左上角红色圆点）
+		# self.close_button = QPushButton(self)
+		# self.close_button.setFixedSize(12, 12)
+		# self.close_button.move(10, 10)
+		# self.close_button.setStyleSheet("""
+		#	 QPushButton {
+		#		 background-color: #FF5F57;
+		#		 border-radius: 6px;
+		#		 border: none;
+		#	 }
+		#	 QPushButton:hover {
+		#		 background-color: #BF4943;
+		#	 }
+		# """)
+		# self.close_button.clicked.connect(self.close)
+		# 三个按钮
+		##FF5F57
+		self.close_button = MacWindowButton("#FF605C", "x", self)
+		self.close_button.move(10, 10)
+		self.close_button.clicked.connect(self.close)
+		##FFBD2E
+		# self.min_button = MacWindowButton("#FFBD44", "-", self)
+		# self.min_button.move(30, 10)
+		# self.min_button.clicked.connect(self.showMinimized)
+		##28C940
+		# self.max_button = MacWindowButton("#00CA4E", "+", self)
+		# self.max_button.move(50, 10)
+		# self.max_button.clicked.connect(self.showMaximized)
+
 		widg1 = QWidget()
 		l1 = QLabel(self)
-		png = PyQt6.QtGui.QPixmap(BasePath + 'wtmenu.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
+		png = QPixmap(BasePath + 'wtmenu.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
 		l1.setPixmap(png)  # 在l1里面，调用setPixmap命令，建立一个图像存放框，并将之前的图像png存放在这个框框里。
 		l1.setMaximumWidth(100)
 		l1.setMaximumHeight(100)
@@ -135,8 +1231,8 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg1.setLayout(blay1)
 
 		widg2 = QWidget()
-		lbl0 = QLabel('Watermelon', self)
-		font = PyQt6.QtGui.QFont()
+		lbl0 = QLabel(NAME, self)
+		font = QFont()
 		font.setFamily("Arial")
 		font.setBold(True)
 		font.setPointSize(20)
@@ -149,7 +1245,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg2.setLayout(blay2)
 
 		widg3 = QWidget()
-		lbl1 = QLabel('Version 2.2.1', self)
+		lbl1 = QLabel(self.tr(f'Version %n').replace('%n', VERSION), self)
 		blay3 = QHBoxLayout()
 		blay3.setContentsMargins(0, 0, 0, 0)
 		blay3.addStretch()
@@ -158,7 +1254,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg3.setLayout(blay3)
 
 		widg4 = QWidget()
-		lbl2 = QLabel('Thanks for your love🤟.', self)
+		lbl2 = QLabel(self.tr('Thanks for your love🤟.'), self)
 		blay4 = QHBoxLayout()
 		blay4.setContentsMargins(0, 0, 0, 0)
 		blay4.addStretch()
@@ -167,7 +1263,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg4.setLayout(blay4)
 
 		widg5 = QWidget()
-		lbl3 = QLabel('感谢您的喜爱！', self)
+		lbl3 = QLabel(self.tr('For more of my works, please visit the homepage🥰.'), self)
 		blay5 = QHBoxLayout()
 		blay5.setContentsMargins(0, 0, 0, 0)
 		blay5.addStretch()
@@ -176,7 +1272,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg5.setLayout(blay5)
 
 		widg6 = QWidget()
-		lbl4 = QLabel('♥‿♥', self)
+		lbl4 = QLabel(self.tr('Special thanks to ut.code(); of the University of Tokyo❤️.'), self)
 		blay6 = QHBoxLayout()
 		blay6.setContentsMargins(0, 0, 0, 0)
 		blay6.addStretch()
@@ -185,7 +1281,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg6.setLayout(blay6)
 
 		widg7 = QWidget()
-		lbl5 = QLabel('※\(^o^)/※', self)
+		lbl5 = QLabel(self.tr('This app is under the protection of GPL-3.0 license.'), self)
 		blay7 = QHBoxLayout()
 		blay7.setContentsMargins(0, 0, 0, 0)
 		blay7.addStretch()
@@ -194,12 +1290,11 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg7.setLayout(blay7)
 
 		widg8 = QWidget()
-		bt1 = QPushButton('The Author', self)
-		bt1.setMaximumHeight(20)
+		widg8.setFixedHeight(50)
+		bt1 = WhiteButton(self.tr('The Author'))
 		bt1.setMinimumWidth(100)
 		bt1.clicked.connect(self.intro)
-		bt2 = QPushButton('Github Page', self)
-		bt2.setMaximumHeight(20)
+		bt2 = WhiteButton(self.tr('Github Page'))
 		bt2.setMinimumWidth(100)
 		bt2.clicked.connect(self.homepage)
 		blay8 = QHBoxLayout()
@@ -210,12 +1305,11 @@ class window_about(QWidget):  # 增加说明页面(About)
 		blay8.addStretch()
 		widg8.setLayout(blay8)
 
-		bt7 = QPushButton('Buy me a cup of coffee☕', self)
-		bt7.setMaximumHeight(20)
+		bt7 = WhiteButton(self.tr('Buy me a cup of coffee☕'))
 		bt7.setMinimumWidth(215)
 		bt7.clicked.connect(self.coffee)
-
 		widg8_5 = QWidget()
+		widg8_5.setFixedHeight(50)
 		blay8_5 = QHBoxLayout()
 		blay8_5.setContentsMargins(0, 0, 0, 0)
 		blay8_5.addStretch()
@@ -224,22 +1318,23 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg8_5.setLayout(blay8_5)
 
 		widg9 = QWidget()
-		bt3 = QPushButton('🍪\n¥5', self)
+		widg9.setFixedHeight(70)
+		bt3 = WhiteButton('🍪\n¥5')
 		bt3.setMaximumHeight(50)
 		bt3.setMinimumHeight(50)
 		bt3.setMinimumWidth(50)
 		bt3.clicked.connect(self.donate)
-		bt4 = QPushButton('🥪\n¥10', self)
+		bt4 = WhiteButton('🥪\n¥10')
 		bt4.setMaximumHeight(50)
 		bt4.setMinimumHeight(50)
 		bt4.setMinimumWidth(50)
 		bt4.clicked.connect(self.donate2)
-		bt5 = QPushButton('🍜\n¥20', self)
+		bt5 = WhiteButton('🍜\n¥20')
 		bt5.setMaximumHeight(50)
 		bt5.setMinimumHeight(50)
 		bt5.setMinimumWidth(50)
 		bt5.clicked.connect(self.donate3)
-		bt6 = QPushButton('🍕\n¥50', self)
+		bt6 = WhiteButton('🍕\n¥50')
 		bt6.setMaximumHeight(50)
 		bt6.setMinimumHeight(50)
 		bt6.setMinimumWidth(50)
@@ -255,7 +1350,7 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg9.setLayout(blay9)
 
 		widg10 = QWidget()
-		lbl6 = QLabel('© 2022 Ryan-the-hito. All rights reserved.', self)
+		lbl6 = QLabel('© 2022 Yixiang SHEN. All rights reserved.', self)
 		blay10 = QHBoxLayout()
 		blay10.setContentsMargins(0, 0, 0, 0)
 		blay10.addStretch()
@@ -264,18 +1359,27 @@ class window_about(QWidget):  # 增加说明页面(About)
 		widg10.setLayout(blay10)
 
 		main_h_box = QVBoxLayout()
+		main_h_box.setContentsMargins(20, 40, 20, 20)  # 重要，用来保证关闭按钮的位置。
+		main_h_box.addSpacing(10)
 		main_h_box.addWidget(widg1)
 		main_h_box.addWidget(widg2)
+		main_h_box.addSpacing(5)
 		main_h_box.addWidget(widg3)
+		main_h_box.addSpacing(5)
 		main_h_box.addWidget(widg4)
+		main_h_box.addSpacing(5)
 		main_h_box.addWidget(widg5)
+		main_h_box.addSpacing(5)
 		main_h_box.addWidget(widg6)
+		main_h_box.addSpacing(5)
 		main_h_box.addWidget(widg7)
+		main_h_box.addStretch()
 		main_h_box.addWidget(widg8)
 		main_h_box.addWidget(widg8_5)
 		main_h_box.addWidget(widg9)
 		main_h_box.addWidget(widg10)
 		main_h_box.addStretch()
+		main_h_box.addSpacing(10)
 		self.setLayout(main_h_box)
 
 	def intro(self):
@@ -320,21 +1424,21 @@ class CustomDialog(QDialog):  # (About1)
 
 	def initUI(self):
 		self.setUpMainWindow()
-		self.setWindowTitle("Thank you for your support!")
+		self.setWindowTitle(self.tr("Thank you for your support!"))
 		self.center()
-		self.resize(400, 390)
+		self.resize(440, 390)
 		self.setFocus()
 		self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
 
 	def setUpMainWindow(self):
 		widge_all = QWidget()
 		l1 = QLabel(self)
-		png = PyQt6.QtGui.QPixmap(BasePath + 'wechat5.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
+		png = QPixmap(BasePath + 'wechat5.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
 		l1.setPixmap(png)  # 在l1里面，调用setPixmap命令，建立一个图像存放框，并将之前的图像png存放在这个框框里。
 		l1.setMaximumSize(160, 240)
 		l1.setScaledContents(True)
 		l2 = QLabel(self)
-		png = PyQt6.QtGui.QPixmap(BasePath + 'alipay5.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
+		png = QPixmap(BasePath + 'alipay5.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
 		l2.setPixmap(png)  # 在l2里面，调用setPixmap命令，建立一个图像存放框，并将之前的图像png存放在这个框框里。
 		l2.setMaximumSize(160, 240)
 		l2.setScaledContents(True)
@@ -344,16 +1448,17 @@ class CustomDialog(QDialog):  # (About1)
 		bk.addWidget(l2)
 		widge_all.setLayout(bk)
 
-		m1 = QLabel('Thank you for your kind support! 😊', self)
-		m2 = QLabel('I will write more interesting apps! 🥳', self)
+		m1 = QLabel(self.tr('Thank you for your kind support! 😊'), self)
+		m2 = QLabel(self.tr('I will write more interesting apps! 🥳'), self)
 
 		widg_c = QWidget()
-		bt1 = QPushButton('Thank you!', self)
-		bt1.setMaximumHeight(20)
+		widg_c.setFixedHeight(50)
+		bt1 = WhiteButton(self.tr('Thank you!'))
+		#bt1.setMaximumHeight(20)
 		bt1.setMinimumWidth(100)
 		bt1.clicked.connect(self.cancel)
-		bt2 = QPushButton('Neither one above? Buy me a coffee~', self)
-		bt2.setMaximumHeight(20)
+		bt2 = WhiteButton(self.tr('Neither one above? Buy me a coffee~'))
+		#bt2.setMaximumHeight(20)
 		bt2.setMinimumWidth(260)
 		bt2.clicked.connect(self.coffee)
 		blay8 = QHBoxLayout()
@@ -393,21 +1498,21 @@ class CustomDialog2(QDialog):  # (About2)
 
 	def initUI(self):
 		self.setUpMainWindow()
-		self.setWindowTitle("Thank you for your support!")
+		self.setWindowTitle(self.tr("Thank you for your support!"))
 		self.center()
-		self.resize(400, 390)
+		self.resize(440, 390)
 		self.setFocus()
 		self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
 
 	def setUpMainWindow(self):
 		widge_all = QWidget()
 		l1 = QLabel(self)
-		png = PyQt6.QtGui.QPixmap(BasePath + 'wechat10.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
+		png = QPixmap(BasePath + 'wechat10.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
 		l1.setPixmap(png)  # 在l1里面，调用setPixmap命令，建立一个图像存放框，并将之前的图像png存放在这个框框里。
 		l1.setMaximumSize(160, 240)
 		l1.setScaledContents(True)
 		l2 = QLabel(self)
-		png = PyQt6.QtGui.QPixmap(BasePath + 'alipay10.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
+		png = QPixmap(BasePath + 'alipay10.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
 		l2.setPixmap(png)  # 在l2里面，调用setPixmap命令，建立一个图像存放框，并将之前的图像png存放在这个框框里。
 		l2.setMaximumSize(160, 240)
 		l2.setScaledContents(True)
@@ -417,16 +1522,17 @@ class CustomDialog2(QDialog):  # (About2)
 		bk.addWidget(l2)
 		widge_all.setLayout(bk)
 
-		m1 = QLabel('Thank you for your kind support! 😊', self)
-		m2 = QLabel('I will write more interesting apps! 🥳', self)
+		m1 = QLabel(self.tr('Thank you for your kind support! 😊'), self)
+		m2 = QLabel(self.tr('I will write more interesting apps! 🥳'), self)
 
 		widg_c = QWidget()
-		bt1 = QPushButton('Thank you!', self)
-		bt1.setMaximumHeight(20)
+		widg_c.setFixedHeight(50)
+		bt1 = WhiteButton(self.tr('Thank you!'))
+		#bt1.setMaximumHeight(20)
 		bt1.setMinimumWidth(100)
 		bt1.clicked.connect(self.cancel)
-		bt2 = QPushButton('Neither one above? Buy me a coffee~', self)
-		bt2.setMaximumHeight(20)
+		bt2 = WhiteButton(self.tr('Neither one above? Buy me a coffee~'))
+		#bt2.setMaximumHeight(20)
 		bt2.setMinimumWidth(260)
 		bt2.clicked.connect(self.coffee)
 		blay8 = QHBoxLayout()
@@ -466,21 +1572,21 @@ class CustomDialog3(QDialog):  # (About3)
 
 	def initUI(self):
 		self.setUpMainWindow()
-		self.setWindowTitle("Thank you for your support!")
+		self.setWindowTitle(self.tr("Thank you for your support!"))
 		self.center()
-		self.resize(400, 390)
+		self.resize(440, 390)
 		self.setFocus()
 		self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
 
 	def setUpMainWindow(self):
 		widge_all = QWidget()
 		l1 = QLabel(self)
-		png = PyQt6.QtGui.QPixmap(BasePath + 'wechat20.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
+		png = QPixmap(BasePath + 'wechat20.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
 		l1.setPixmap(png)  # 在l1里面，调用setPixmap命令，建立一个图像存放框，并将之前的图像png存放在这个框框里。
 		l1.setMaximumSize(160, 240)
 		l1.setScaledContents(True)
 		l2 = QLabel(self)
-		png = PyQt6.QtGui.QPixmap(BasePath + 'alipay20.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
+		png = QPixmap(BasePath + 'alipay20.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
 		l2.setPixmap(png)  # 在l2里面，调用setPixmap命令，建立一个图像存放框，并将之前的图像png存放在这个框框里。
 		l2.setMaximumSize(160, 240)
 		l2.setScaledContents(True)
@@ -490,16 +1596,17 @@ class CustomDialog3(QDialog):  # (About3)
 		bk.addWidget(l2)
 		widge_all.setLayout(bk)
 
-		m1 = QLabel('Thank you for your kind support! 😊', self)
-		m2 = QLabel('I will write more interesting apps! 🥳', self)
+		m1 = QLabel(self.tr('Thank you for your kind support! 😊'), self)
+		m2 = QLabel(self.tr('I will write more interesting apps! 🥳'), self)
 
 		widg_c = QWidget()
-		bt1 = QPushButton('Thank you!', self)
-		bt1.setMaximumHeight(20)
+		widg_c.setFixedHeight(50)
+		bt1 = WhiteButton(self.tr('Thank you!'))
+		#bt1.setMaximumHeight(20)
 		bt1.setMinimumWidth(100)
 		bt1.clicked.connect(self.cancel)
-		bt2 = QPushButton('Neither one above? Buy me a coffee~', self)
-		bt2.setMaximumHeight(20)
+		bt2 = WhiteButton(self.tr('Neither one above? Buy me a coffee~'))
+		#bt2.setMaximumHeight(20)
 		bt2.setMinimumWidth(260)
 		bt2.clicked.connect(self.coffee)
 		blay8 = QHBoxLayout()
@@ -539,21 +1646,21 @@ class CustomDialog4(QDialog):  # (About4)
 
 	def initUI(self):
 		self.setUpMainWindow()
-		self.setWindowTitle("Thank you for your support!")
+		self.setWindowTitle(self.tr("Thank you for your support!"))
 		self.center()
-		self.resize(400, 390)
+		self.resize(440, 390)
 		self.setFocus()
 		self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
 
 	def setUpMainWindow(self):
 		widge_all = QWidget()
 		l1 = QLabel(self)
-		png = PyQt6.QtGui.QPixmap(BasePath + 'wechat50.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
+		png = QPixmap(BasePath + 'wechat50.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
 		l1.setPixmap(png)  # 在l1里面，调用setPixmap命令，建立一个图像存放框，并将之前的图像png存放在这个框框里。
 		l1.setMaximumSize(160, 240)
 		l1.setScaledContents(True)
 		l2 = QLabel(self)
-		png = PyQt6.QtGui.QPixmap(BasePath + 'alipay50.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
+		png = QPixmap(BasePath + 'alipay50.png')  # 调用QtGui.QPixmap方法，打开一个图片，存放在变量png中
 		l2.setPixmap(png)  # 在l2里面，调用setPixmap命令，建立一个图像存放框，并将之前的图像png存放在这个框框里。
 		l2.setMaximumSize(160, 240)
 		l2.setScaledContents(True)
@@ -563,16 +1670,17 @@ class CustomDialog4(QDialog):  # (About4)
 		bk.addWidget(l2)
 		widge_all.setLayout(bk)
 
-		m1 = QLabel('Thank you for your kind support! 😊', self)
-		m2 = QLabel('I will write more interesting apps! 🥳', self)
+		m1 = QLabel(self.tr('Thank you for your kind support! 😊'), self)
+		m2 = QLabel(self.tr('I will write more interesting apps! 🥳'), self)
 
 		widg_c = QWidget()
-		bt1 = QPushButton('Thank you!', self)
-		bt1.setMaximumHeight(20)
+		widg_c.setFixedHeight(50)
+		bt1 = WhiteButton(self.tr('Thank you!'))
+		#bt1.setMaximumHeight(20)
 		bt1.setMinimumWidth(100)
 		bt1.clicked.connect(self.cancel)
-		bt2 = QPushButton('Neither one above? Buy me a coffee~', self)
-		bt2.setMaximumHeight(20)
+		bt2 = WhiteButton(self.tr('Neither one above? Buy me a coffee~'))
+		#bt2.setMaximumHeight(20)
 		bt2.setMinimumWidth(260)
 		bt2.clicked.connect(self.coffee)
 		blay8 = QHBoxLayout()
@@ -605,46 +1713,119 @@ class CustomDialog4(QDialog):  # (About4)
 		self.close()
 
 
-class window_update(QWidget):  # 增加更新页面（Check for Updates）
+class WindowUpdate(QWidget):  # 增加更新页面（Check for Updates）
 	def __init__(self):
 		super().__init__()
-		self.initUI()
+		self.radius = 16  # 圆角半径，可按 macOS 15 或 26 设置为 16~26
 
-	def initUI(self):  # 说明页面内信息
+		self.setWindowFlags(
+			Qt.WindowType.FramelessWindowHint |
+			Qt.WindowType.Window |
+			Qt.WindowType.WindowStaysOnTopHint
+		)
+		self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+		self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
 
-		self.lbl = QLabel('Current Version: v2.2.1', self)
-		self.lbl.move(30, 45)
+		self.init_ui()
 
-		lbl0 = QLabel('Download Update:', self)
-		lbl0.move(30, 75)
-
-		lbl1 = QLabel('Latest Version:', self)
-		lbl1.move(30, 15)
-
-		self.lbl2 = QLabel('', self)
-		self.lbl2.move(122, 15)
-
-		bt1 = QPushButton('GitHub', self)
-		bt1.setFixedWidth(120)
-		bt1.clicked.connect(self.upd)
-		bt1.move(150, 75)
-
-		bt2 = QPushButton('Baidu Netdisk', self)
-		bt2.setFixedWidth(120)
-		bt2.clicked.connect(self.upd2)
-		bt2.move(150, 105)
-
-		self.resize(300, 150)
+	def init_ui(self):
+		self.setUpMainWindow()
+		self.setFixedSize(280, 220)
 		self.center()
-		self.setWindowTitle('Watermelon Updates')
 		self.setFocus()
-		self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
+
+	def paintEvent(self, event):
+		painter = QPainter(self)
+		painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+		painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+		rect = QRectF(self.rect())
+		path = QPainterPath()
+		path.addRoundedRect(rect, self.radius, self.radius)
+
+		painter.setClipPath(path)
+		bg_color = self.palette().color(QPalette.ColorRole.Window)
+		painter.fillPath(path, bg_color)
+
+	# 让无边框窗口可拖动
+	def mousePressEvent(self, event):
+		if event.button() == Qt.MouseButton.LeftButton:
+			self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+			event.accept()
+
+	def mouseMoveEvent(self, event):
+		if event.buttons() == Qt.MouseButton.LeftButton:
+			self.move(event.globalPosition().toPoint() - self.drag_pos)
+			event.accept()
+
+	def setUpMainWindow(self):
+		# 添加关闭按钮（仿 macOS 左上角红色圆点）
+		# self.close_button = QPushButton(self)
+		# self.close_button.setFixedSize(12, 12)
+		# self.close_button.move(10, 10)
+		# self.close_button.setStyleSheet("""
+		#	 QPushButton {
+		#		 background-color: #FF5F57;
+		#		 border-radius: 6px;
+		#		 border: none;
+		#	 }
+		#	 QPushButton:hover {
+		#		 background-color: #BF4943;
+		#	 }
+		# """)
+		# self.close_button.clicked.connect(self.close)
+		self.close_button = MacWindowButton("#FF605C", "x", self)
+		self.close_button.move(10, 10)
+		self.close_button.clicked.connect(self.close)
+
+		title = QLabel(self.tr("<h2>Watermelon Update</h2>"))
+		title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+		widg5 = QWidget()
+		lbl1 = QLabel(self.tr('Latest version:'), self)
+		self.lbl2 = QLabel('', self)
+		blay5 = QHBoxLayout()
+		blay5.setContentsMargins(0, 0, 0, 0)
+		# blay5.addStretch()
+		blay5.addWidget(lbl1)
+		blay5.addWidget(self.lbl2)
+		blay5.addStretch()
+		widg5.setLayout(blay5)
+
+		widg3 = QWidget()
+		self.lbl = QLabel(self.tr(f'Current version: v%n').replace('%n', VERSION), self)
+		blay3 = QHBoxLayout()
+		blay3.setContentsMargins(0, 0, 0, 0)
+		# blay3.addStretch()
+		blay3.addWidget(self.lbl)
+		blay3.addStretch()
+		widg3.setLayout(blay3)
+
+		widg4 = QWidget()
+		widg4.setFixedHeight(50)
+		lbl0 = QLabel(self.tr('Check release:'), self)
+		bt1 = WhiteButton('Github')
+		bt1.clicked.connect(self.upd)
+		blay4 = QHBoxLayout()
+		blay4.setContentsMargins(0, 0, 0, 0)
+		# blay4.addStretch()
+		blay4.addWidget(lbl0)
+		blay4.addWidget(bt1)
+		blay4.addStretch()
+		widg4.setLayout(blay4)
+
+		main_h_box = QVBoxLayout()
+		main_h_box.setContentsMargins(20, 40, 20, 20)  # 重要，用来保证关闭按钮的位置。
+		main_h_box.addWidget(title)
+		main_h_box.addSpacing(5)
+		main_h_box.addWidget(widg5)
+		main_h_box.addSpacing(5)
+		main_h_box.addWidget(widg3)
+		main_h_box.addWidget(widg4)
+		self.setLayout(main_h_box)
 
 	def upd(self):
 		webbrowser.open('https://github.com/Ryan-the-hito/Watermelon/releases')
-
-	def upd2(self):
-		webbrowser.open('https://pan.baidu.com/s/1O3YElKc8vn9-4lsnM7QShA?pwd=erq7')
 
 	def center(self):  # 设置窗口居中
 		qr = self.frameGeometry()
@@ -689,19 +1870,62 @@ class window_update(QWidget):  # 增加更新页面（Check for Updates）
 			pattern2 = re.compile(r'(v\d+\.\d+\.\d+)\sLatest')
 			result = pattern2.findall(plain_text_utf8)
 			result = ''.join(result)
-			nowversion = self.lbl.text().replace('Current Version: ', '')
+			nowversion = 'v' + VERSION
 			if result == nowversion:
-				alertupdate = result + '. You are up to date!'
+				alertupdate = result + self.tr(' (up-to-date)')
 				self.lbl2.setText(alertupdate)
 				self.lbl2.adjustSize()
 			else:
-				alertupdate = result + ' is ready!'
+				alertupdate = result + self.tr(' is ready!')
 				self.lbl2.setText(alertupdate)
 				self.lbl2.adjustSize()
 		except:
-			alertupdate = 'No Intrenet'
+			alertupdate = self.tr('No Intrenet')
 			self.lbl2.setText(alertupdate)
 			self.lbl2.adjustSize()
+
+	@staticmethod
+	def fetch_latest_version_text():
+		# 返回页面纯文本，或直接返回最新版本字符串
+		targetURL = 'https://github.com/Ryan-the-hito/Watermelon/releases'
+		try:
+			urllib3.disable_warnings()
+			logging.captureWarnings(True)
+			s = requests.session()
+			s.keep_alive = False
+			response = s.get(targetURL, verify=False, timeout=15)
+			response.encoding = 'utf-8'
+			html_content = response.text
+
+			soup = BeautifulSoup(html_content, "html.parser")
+			for img in soup.find_all("img"):
+				img.decompose()
+			text_maker = html2text.HTML2Text()
+			text_maker.ignore_links = True
+			text_maker.ignore_images = True
+			plain_text = text_maker.handle(str(soup))
+			plain_text_utf8 = plain_text.encode(response.encoding).decode("utf-8")
+
+			for _ in range(10):
+				plain_text_utf8 = (plain_text_utf8
+								   .replace('\n\n\n\n', '\n\n')
+								   .replace('\n\n\n', '\n\n')
+								   .replace('   ', ' ')
+								   .replace('  ', ' '))
+			return plain_text_utf8
+		except Exception:
+			return None
+
+	@staticmethod
+	def extract_latest_tag(plain_text_utf8: str) -> str | None:
+		# 返回类似 'v0.0.12' 的字符串
+		if not plain_text_utf8:
+			return None
+		pattern2 = re.compile(r'(v\d+\.\d+\.\d+)\sLatest')
+		result = pattern2.findall(plain_text_utf8)
+		if result:
+			return result[0]
+		return None
 
 MD_EMBED_TAG_ID = "md-source-7c3a6b24"
 CACHE_DIR = Path.home() / "Library" / "Caches" / "NotesMarkdown"
@@ -1878,19 +3102,20 @@ class NotesLoader(QThread):
 		self.finished.emit(notes)
 
 
-class NotesFolderDialog(QDialog):
+class NotesFolderDialog(CustomMessageBox):
 	note_selected = pyqtSignal(object)
 
-	def __init__(self, parent=None):
-		super().__init__(parent)
+	def __init__(self):
+		super().__init__(text=None, buttons=(), fixed_size=None)
 		self.setWindowTitle("Select Notes")
 		self.center()
 		self.resize(520, 320)
-		self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+		self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
 		self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-		# self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
 		self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 		# self._centered_once = False
+		self.body_layout.setContentsMargins(20, 28, 20, 20)
+		self.body_layout.setSpacing(12)
 
 		self.notes = []
 		self.filtered_notes = []
@@ -1914,11 +3139,11 @@ class NotesFolderDialog(QDialog):
 		splitter.setStretchFactor(0, 1)
 		splitter.setStretchFactor(1, 2)
 
-		select_btn = QPushButton("Select")
-		select_btn.setFixedSize(100, 20)
+		select_btn = WhiteButton("Select")
+		# select_btn.setFixedSize(100, 20)
 		select_btn.clicked.connect(self.select_current)
-		cancel_btn = QPushButton("Cancel")
-		cancel_btn.setFixedSize(100, 20)
+		cancel_btn = WhiteButton("Cancel")
+		# cancel_btn.setFixedSize(100, 20)
 		cancel_btn.clicked.connect(self.reject)
 
 		btn_row = QHBoxLayout()
@@ -1938,13 +3163,7 @@ class NotesFolderDialog(QDialog):
 		w3.setLayout(blay3)
 		w3.setObjectName("Main")
 
-		layout = QVBoxLayout()
-		layout.setContentsMargins(0, 0, 0, 0)
-		layout.addWidget(w3)
-		# layout.addWidget(self.search_input)
-		# layout.addWidget(splitter)
-		# layout.addLayout(btn_row)
-		self.setLayout(layout)
+		self.body_layout.addWidget(w3)
 
 	# def showEvent(self, event):
 	# 	super().showEvent(event)
@@ -2026,7 +3245,12 @@ class NotesFolderDialog(QDialog):
 		self.accept()
 	
 	def center(self):  # 设置窗口居中
-		self.move(500, 300)
+		screen = QGuiApplication.primaryScreen()
+		if screen:
+			geo = screen.availableGeometry()
+			x = geo.x() + (geo.width() - self.width()) // 2
+			y = geo.y() + (geo.height() - self.height()) // 2
+			self.move(x, y)
 
 
 class window3(QWidget):  # 主窗口
@@ -2037,6 +3261,7 @@ class window3(QWidget):  # 主窗口
 		self._always_on_top = True
 		self._screen_signals_connected = False
 		self._tracked_screen = None
+		self._current_bg_color = '#FFFFFF'  # 默认白色背景
 		self.initUI()
 
 	def initUI(self):
@@ -2063,6 +3288,7 @@ class window3(QWidget):  # 主窗口
 		self.notes_pending_title = None
 		self.notes_pending_folder = None
 		self.notes_require_match_on_show = False
+		self.notes_awaiting_reselect = False  # 防止重复弹窗的标志
 		self.notes_last_folder = None
 		self.notes_last_title = None
 		self.notes_refresh_in_progress = False
@@ -2085,8 +3311,9 @@ class window3(QWidget):  # 主窗口
 		self.set_textedit_font(self._current_font_size, self._current_font_family)
 
 		self.topleft = QWebEngineView(self)
-		self.topleft.setStyleSheet("border: 0px; background: #F3F2EE;")
-		self.topleft.page().setBackgroundColor(QColor("#F3F2EE"))
+		init_bg = '#3A3A3A' if is_dark_theme(app) else '#FFFFFF'
+		self.topleft.setStyleSheet(f"border: 0px; background: {init_bg};")
+		self.topleft.page().setBackgroundColor(QColor(init_bg))
 		self.topleft_frame = QFrame(self)
 		self.topleft_frame.setObjectName("webFrame")
 		self.topleft_frame.setMaximumHeight(SCREEN_HEIGHT - 200)
@@ -2114,6 +3341,7 @@ class window3(QWidget):  # 主窗口
 		self.splitter1 = QSplitter(Qt.Orientation.Horizontal)
 		self.splitter1.addWidget(self.topleft_frame)
 		self.splitter1.addWidget(self.topright)
+		self.splitter1.setSizes([600, 600])  # 1:1 比例
 		self.splitter1.splitterMoved.connect(self.splitter1_move)
 
 		self.splitter2 = QSplitter(Qt.Orientation.Vertical)
@@ -2158,17 +3386,17 @@ class window3(QWidget):  # 主窗口
 		self.l1.setFixedSize(1478, 215)
 		self.l1.move(0, SCREEN_HEIGHT - 215)
 
-		self.btn_sub1 = QPushButton('Open', self)
+		self.btn_sub1 = MacNormalButton('Open', self, always_dark=True)
 		self.btn_sub1.clicked.connect(self.open_file)
-		self.btn_sub1.setFixedSize(230, 20)
-		self.btn_sub2 = QPushButton('New', self)
+		self.btn_sub1.setFixedSize(210, 22)
+		self.btn_sub2 = MacNormalButton('New', self, always_dark=True)
 		self.btn_sub2.clicked.connect(self.new_file)
-		self.btn_sub2.setFixedSize(230, 20)
+		self.btn_sub2.setFixedSize(210, 22)
 
-		self.widget0 = QComboBox(self)
+		self.widget0 = DropdownButton(self, always_dark=True)
 		self.widget0.setCurrentIndex(0)
-
-		self.widget0.setFixedWidth(230)
+		self.widget0.setFixedSize(210, 22)
+		self.widget0.setFixedWidth(210)
 		tarname3 = "Note 001.md"
 		fulldir3 = os.path.join(fulldir1, tarname3)
 		if not os.path.exists(fulldir3):
@@ -2203,64 +3431,38 @@ The window will float at top all the time as you focus on typing. If you want to
 		# self.btn_mode.clicked.connect(self.toggle_notes_mode)
 		# self.btn_mode.setFixedSize(120, 20)
 
-		self.btn_notes_folder = QPushButton('Notes Folder', self)
+		self.btn_notes_folder = MacNormalButton('Notes Folder', self, always_dark=True)
 		self.btn_notes_folder.clicked.connect(self.open_notes_folder_dialog)
-		self.btn_notes_folder.setFixedSize(230, 20)
+		self.btn_notes_folder.setFixedSize(210, 22)
 
-		self.widget_notes = QComboBox(self)
-		self.widget_notes.setFixedWidth(230)
+		self.widget_notes = DropdownButton(self, always_dark=True)
+		self.widget_notes.setFixedSize(210, 22)
+		self.widget_notes.setFixedWidth(210)
 		self.widget_notes.setEnabled(False)
 		self.widget_notes.currentIndexChanged.connect(self.notes_index_change)
 
-		self.btn_notes_save = QPushButton('Save', self)
+		self.btn_notes_save = MacNormalButton('Save', self, always_dark=True)
 		self.btn_notes_save.clicked.connect(self.save_notes_sync)
-		self.btn_notes_save.setFixedSize(230, 20)
+		self.btn_notes_save.setFixedSize(210, 22)
 		self.btn_notes_save.setEnabled(False)
-		self.btn_notes_save.setStyleSheet('''
-				QPushButton:disabled{
-				border: 1px solid #999999;
-				background-color: #E6E6E6;
-				border-radius: 4px;
-				padding: 1px;
-				color: #777777
-				}
-				''')
 
-		self.btn_notes_new = QPushButton('New', self)
+		self.btn_notes_new = MacNormalButton('New', self, always_dark=True)
 		self.btn_notes_new.clicked.connect(self.new_notes_note)
-		self.btn_notes_new.setFixedSize(230, 20)
+		self.btn_notes_new.setFixedSize(210, 22)
 		self.btn_notes_new.setEnabled(False)
-		self.btn_notes_new.setStyleSheet('''
-				QPushButton:disabled{
-				border: 1px solid #999999;
-				background-color: #E6E6E6;
-				border-radius: 4px;
-				padding: 1px;
-				color: #777777
-				}
-				''')
 
-		self.btn_notes_export = QPushButton('Export', self)
+		self.btn_notes_export = MacNormalButton('Export', self, always_dark=True)
 		self.btn_notes_export.clicked.connect(self.export_notes_file)
-		self.btn_notes_export.setFixedSize(230, 20)
+		self.btn_notes_export.setFixedSize(210, 22)
 		self.btn_notes_export.setEnabled(False)
-		self.btn_notes_export.setStyleSheet('''
-				QPushButton:disabled{
-				border: 1px solid #999999;
-				background-color: #E6E6E6;
-				border-radius: 4px;
-				padding: 1px;
-				color: #777777
-				}
-				''')
 
-		self.btn_sub3 = QPushButton('Export', self)
+		self.btn_sub3 = MacNormalButton('Export', self, always_dark=True)
 		self.btn_sub3.clicked.connect(self.export_file)
-		self.btn_sub3.setFixedSize(230, 20)
+		self.btn_sub3.setFixedSize(210, 22)
 
-		self.btn_sub4 = QPushButton('Clear', self)
+		self.btn_sub4 = MacNormalButton('Clear', self, always_dark=True)
 		self.btn_sub4.clicked.connect(self.clear_all)
-		self.btn_sub4.setFixedSize(230, 20)
+		self.btn_sub4.setFixedSize(210, 22)
 
 		self.qw1 = QWidget()
 		hbox1 = QHBoxLayout(self)
@@ -2288,53 +3490,35 @@ The window will float at top all the time as you focus on typing. If you want to
 		vbox3.addStretch()
 		self.setLayout(vbox3)
 
-		self.btn_00 = QPushButton('', self)
+		self.btn_00 = WhiteButton('', self)
 		self.btn_00.clicked.connect(self.pin_a_tab)
 		self.btn_00.setFixedHeight(10)
-		self.btn_00.setFixedWidth(1200)
+		self.btn_00.setFixedWidth(1200-74-24)
 		self.btn_00.setStyleSheet('''
 				border: 1px outset grey;
 				background-color: #0085FF;
 				border-radius: 4px;
 				padding: 1px;
 				color: #FFFFFF''')
-		self.btn_00.move(160, SCREEN_HEIGHT - 35)
+		self.btn_00.move(160+37+12, SCREEN_HEIGHT - 35)
 
-		self.btn0_1 = QPushButton('', self)
-		self.btn0_1.setFixedSize(25, 25)
-		self.btn0_1.setStyleSheet('''
-				QPushButton{
-				border: transparent;
-				background-color: transparent;
-				border-image: url(/Applications/Watermelon.app/Contents/Resources/set2.png);
-				}
-				QPushButton:pressed{
-				border: 1px outset grey;
-				background-color: #0085FF;
-				border-radius: 4px;
-				padding: 1px;
-				color: #FFFFFF
-				}
-				''')
-		self.btn0_1.move(35, SCREEN_HEIGHT - 185)
+		self.btn0_1 = GlassButton(
+			'', radius=19,
+			icon_path='/Applications/Watermelon.app/Contents/Resources/set2.png',
+			momentary=True,
+			parent=self
+		)
+		self.btn0_1.setFixedSize(38, 38)
+		self.btn0_1.move(158, SCREEN_HEIGHT - 70)
 
-		self.btn0_2 = QPushButton('', self)
-		self.btn0_2.setFixedSize(25, 25)
-		self.btn0_2.setStyleSheet('''
-				QPushButton{
-				border: transparent;
-				background-color: transparent;
-				border-image: url(/Applications/Watermelon.app/Contents/Resources/repeat.png);
-				}
-				QPushButton:pressed{
-				border: 1px outset grey;
-				background-color: #0085FF;
-				border-radius: 4px;
-				padding: 1px;
-				color: #FFFFFF
-				}
-				''')
-		self.btn0_2.move(1435, SCREEN_HEIGHT - 182)
+		self.btn0_2 = GlassButton(
+			'', radius=19,
+			icon_path='/Applications/Watermelon.app/Contents/Resources/repeat.png',
+			momentary=True,
+			parent=self
+		)
+		self.btn0_2.setFixedSize(38, 38)
+		self.btn0_2.move(1324, SCREEN_HEIGHT - 70)
 
 		self._apply_mode_visibility()
 
@@ -2358,7 +3542,7 @@ The window will float at top all the time as you focus on typing. If you want to
 		self.topright.setHtml(endhtmlbio)
 		self.widget0.currentIndexChanged.connect(self.index_change)
 
-		w2.setStyleSheet(style_sheet_ori)
+		w2.setStyleSheet(style_sheet_dark if is_dark_theme(app) else style_sheet_ori)
 
 		self.show()
 		self.setFocus()
@@ -2374,15 +3558,46 @@ The window will float at top all the time as you focus on typing. If you want to
 		self.btn0_1.raise_()
 		self.btn0_2.raise_()
 
-		self.assigntoall()
+		# 启动内部组件动画（延迟一小段时间让窗口先开始滑入）
+		QTimer.singleShot(200, self._start_intro_animation)
 
-		w2.checkupdate()
-		if w2.lbl2.text() != 'No Intrenet' and 'ready' in w2.lbl2.text():
-			w2.show()
+		# self.assigntoall()
+
+		# w2.checkupdate()
+		# if w2.lbl2.text() != 'No Intrenet' and 'ready' in w2.lbl2.text():
+		# 	w2.show()
+
+		# 启动自动更新线程（24h = 86400秒）
+		self.update_check_worker = UpdateCheckWorker(current_version='v' + VERSION, interval_seconds=86400)
+		self.update_check_worker.update_available.connect(self.on_update_available)  # 主线程槽
+		self.update_check_worker.checked_ok.connect(self.on_update_checked_ok)  # 可选：日志或无感刷新
+		self.update_check_worker.checked_error.connect(self.on_update_checked_error)  # 可选：日志
+		self.update_check_worker.start()
 
 	def showEvent(self, event):
 		super().showEvent(event)
 		self._connect_screen_signals()
+
+	def changeEvent(self, event):
+		super().changeEvent(event)
+		# 当窗口被激活时（用户从其他应用切换回来），检查 Notes 路径是否有效
+		if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
+			self._check_notes_path_on_focus()
+
+	def _check_notes_path_on_focus(self):
+		"""当窗口获得焦点时，检查当前 Notes 路径是否仍然有效"""
+		if not self.notes_mode_enabled or not self.notes_active:
+			return
+		if self.notes_awaiting_reselect:
+			return  # 已经在等待用户重新选择，不重复检查
+		if not self.notes_current_folder or not self.notes_current_title:
+			return
+		# 检查路径是否有效
+		check_html = self._read_note_html(self.notes_current_folder, self.notes_current_title)
+		if check_html is None or not check_html.strip():
+			# 路径无效，锁定编辑器并提示用户
+			self._set_notes_active(False)
+			self._prompt_notes_reselect(self.notes_current_folder, self.notes_current_title)
 
 	def _connect_screen_signals(self):
 		if self._screen_signals_connected:
@@ -2480,10 +3695,12 @@ The window will float at top all the time as you focus on typing. If you want to
 		# 调整底部图片的位置
 		self.l1.move(0, screen_height - 215)
 		# 调整蓝色按钮的位置
-		self.btn_00.move(160, screen_height - 35)
+		self.btn_00.move(160+37+12, screen_height - 35)
 		# 调整设置按钮的位置
-		self.btn0_1.move(35, screen_height - 185)
-		self.btn0_2.move(1435, screen_height - 182)
+		# self.btn0_1.move(35, screen_height - 185)
+		# self.btn0_2.move(1435, screen_height - 182)
+		self.btn0_1.move(158, screen_height - 70)
+		self.btn0_2.move(1324, screen_height - 70)
 
 	def _default_splitter2_ratio(self, screen_height):
 		total = max(screen_height - 100, 1)
@@ -2537,6 +3754,60 @@ The window will float at top all the time as you focus on typing. If you want to
 	def is_always_on_top(self):
 		return self._always_on_top
 
+	def set_bg_color(self, bg_color):
+		# 保存当前背景颜色
+		self._current_bg_color = bg_color
+		# 根据暗色/亮色模式设置文字颜色
+		text_color = '#FFFFFF' if is_dark_theme(app) else '#000000'
+		border_color = '#555555' if is_dark_theme(app) else 'grey'
+		# 更新 topleft (QWebEngineView) 的背景颜色
+		self.topleft.setStyleSheet(f"border: 0px; background: {bg_color};")
+		self.topleft.page().setBackgroundColor(QColor(bg_color))
+		# 更新 topleft_frame (QFrame#webFrame) 的背景颜色
+		self.topleft_frame.setStyleSheet(f'''
+			QFrame#webFrame{{
+				border: 1px solid {border_color};
+				border-radius:4px;
+				padding: 0px;
+				background-clip: border;
+				background-color: {bg_color};
+			}}
+		''')
+		# 更新 topright (QTextEdit) 的背景颜色
+		self.topright.setStyleSheet(f'''
+			QTextEdit{{
+				border: 1px solid {border_color};
+				border-radius:4px;
+				padding: 1px 5px 1px 3px;
+				background-clip: border;
+				background-color: {bg_color};
+				color: {text_color};
+			}}
+		''')
+		# 更新 bottom (QTextEdit) 的背景颜色
+		self.bottom.setStyleSheet(f'''
+			QTextEdit{{
+				border: 1px solid {border_color};
+				border-radius:4px;
+				padding: 1px 5px 1px 3px;
+				background-clip: border;
+				background-color: {bg_color};
+				color: {text_color};
+			}}
+		''')
+		# 重新渲染 topleft 和 topright 的 HTML 内容以应用新的背景颜色
+		try:
+			previewtext = self.bottom.toPlainText()
+			if self.topleftshow == 1:
+				endhtml = self.md2html(previewtext)
+				self.topleft.setHtml(endhtml)
+			if self.toprightshow == 1:
+				endbio = self.addb2(previewtext.replace('*', ''))
+				endhtmlbio = self.md2html(endbio)
+				self.topright.setHtml(endhtmlbio)
+		except Exception:
+			pass
+
 	def move_window(self, width, height):
 		animation = QPropertyAnimation(self, b"geometry", self)
 		animation.setDuration(250)
@@ -2552,6 +3823,270 @@ The window will float at top all the time as you focus on typing. If you want to
 		animation.setEndValue(new_pos)
 		animation.start()
 		self.i += 1
+
+	def _start_intro_animation(self):
+		"""启动动画：splitter2从上到下，l1从下到上，然后qw1和按钮淡入"""
+		# 保存目标位置
+		qw0_target_y = self.qw0.y()
+		l1_target_y = self.l1.y()
+
+		# 设置初始位置（splitter2/qw0 在上方，l1 在下方）
+		self.qw0.move(self.qw0.x(), -self.qw0.height())
+		self.l1.move(self.l1.x(), self.height() + 50)
+
+		# 先隐藏需要淡入的组件
+		self.qw1.setVisible(False)
+		self.btn_00.setVisible(False)
+		self.btn0_1.setVisible(False)
+		self.btn0_2.setVisible(False)
+
+		# 创建 qw0 从上到下的动画
+		self._anim_qw0 = QPropertyAnimation(self.qw0, b"pos", self)
+		self._anim_qw0.setDuration(600)
+		self._anim_qw0.setStartValue(self.qw0.pos())
+		self._anim_qw0.setEndValue(self.qw0.pos().__class__(self.qw0.x(), qw0_target_y))
+		self._anim_qw0.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+		# 创建 l1 从下到上的动画
+		self._anim_l1 = QPropertyAnimation(self.l1, b"pos", self)
+		self._anim_l1.setDuration(600)
+		self._anim_l1.setStartValue(self.l1.pos())
+		self._anim_l1.setEndValue(self.l1.pos().__class__(self.l1.x(), l1_target_y))
+		self._anim_l1.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+		# 并行执行两个滑动动画
+		self._slide_group = QParallelAnimationGroup(self)
+		self._slide_group.addAnimation(self._anim_qw0)
+		self._slide_group.addAnimation(self._anim_l1)
+		self._slide_group.finished.connect(self._start_fade_in_animation)
+		self._slide_group.start()
+
+	def _start_fade_in_animation(self):
+		"""滑动动画完成后，开始淡入动画"""
+		# 为每个需要淡入的组件创建透明度效果
+		self._opacity_effects = []
+		self._fade_animations = []
+		fade_widgets = [self.qw1, self.btn_00, self.btn0_1, self.btn0_2]
+
+		self._fade_group = QParallelAnimationGroup(self)
+
+		for widget in fade_widgets:
+			# 创建透明度效果
+			opacity_effect = QGraphicsOpacityEffect(widget)
+			opacity_effect.setOpacity(0.0)
+			widget.setGraphicsEffect(opacity_effect)
+			widget.setVisible(True)
+			self._opacity_effects.append(opacity_effect)
+
+			# 创建淡入动画
+			fade_anim = QPropertyAnimation(opacity_effect, b"opacity", self)
+			fade_anim.setDuration(400)
+			fade_anim.setStartValue(0.0)
+			fade_anim.setEndValue(1.0)
+			fade_anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+			self._fade_animations.append(fade_anim)
+			self._fade_group.addAnimation(fade_anim)
+
+		self._fade_group.finished.connect(self._on_intro_animation_finished)
+		self._fade_group.start()
+
+	def _on_intro_animation_finished(self):
+		"""启动动画完成后的清理工作"""
+		# 移除透明度效果，恢复正常渲染
+		for widget in [self.qw1, self.btn_00, self.btn0_1, self.btn0_2]:
+			widget.setGraphicsEffect(None)
+		# 清理动画对象引用
+		self._opacity_effects = []
+		self._fade_animations = []
+
+	def _start_pin_show_animation(self, screen_height):
+		"""pin_a_tab 显示时的动画：btn_00 下落到屏幕外，然后是标准启动动画"""
+		# 保存 btn_00 的目标位置和尺寸
+		btn_00_target_x = 160 + 37 + 12
+		btn_00_target_y = screen_height - 35
+		btn_00_target_width = 1200 - 74 - 24
+		btn_00_target_height = 10
+
+		# 设置 btn_00 的初始状态：目标尺寸，在上方
+		initial_y = -50  # 从屏幕上方开始
+
+		self.btn_00.setFixedSize(btn_00_target_width, btn_00_target_height)
+		self.btn_00.move(btn_00_target_x, initial_y)
+		self.btn_00.setVisible(True)
+		self.btn_00.raise_()
+
+		# 隐藏其他组件，等待后续动画
+		self.qw0.setVisible(False)
+		self.qw1.setVisible(False)
+		self.l1.setVisible(False)
+		self.btn0_1.setVisible(False)
+		self.btn0_2.setVisible(False)
+
+		# 保存目标值供动画使用
+		self._btn_00_target_x = btn_00_target_x
+		self._btn_00_target_y = btn_00_target_y
+		self._btn_00_target_width = btn_00_target_width
+		self._btn_00_target_height = btn_00_target_height
+		self._pin_screen_height = screen_height
+
+		# 创建位置动画（从上到下，落到屏幕外）
+		self._anim_btn_00_pos = QPropertyAnimation(self.btn_00, b"pos", self)
+		self._anim_btn_00_pos.setDuration(350)  # 稍长一点让动画更流畅
+		self._anim_btn_00_pos.setStartValue(self.btn_00.pos())
+		# 落到屏幕下方（屏幕高度 + 50，确保看不到）
+		self._anim_btn_00_pos.setEndValue(self.btn_00.pos().__class__(btn_00_target_x, screen_height + 50))
+		self._anim_btn_00_pos.setEasingCurve(QEasingCurve.Type.InQuad)  # 加速下落效果
+
+		# 只执行位置动画
+		self._anim_btn_00_pos.finished.connect(self._on_btn_00_anim_finished)
+		self._anim_btn_00_pos.start()
+
+	def _on_btn_00_anim_finished(self):
+		"""btn_00 动画完成后，隐藏它并开始标准启动动画"""
+		# 隐藏 btn_00，它将在后续淡入动画中重新显示
+		self.btn_00.setVisible(False)
+
+		# 将 btn_00 移动到最终应该出现的位置（为后续淡入做准备）
+		self.btn_00.setFixedSize(self._btn_00_target_width, self._btn_00_target_height)
+		self.btn_00.move(self._btn_00_target_x, self._btn_00_target_y)
+
+		screen_height = self._pin_screen_height
+		# 先把 qw0 和 l1 移动到屏幕外，再显示，防止闪现
+		self.qw0.move(self.qw0.x(), -self.qw0.height())
+		self.l1.move(self.l1.x(), screen_height + 50)
+		# 现在才显示（已经在屏幕外了）
+		self.qw0.setVisible(True)
+		self.l1.setVisible(True)
+
+		# 开始标准启动动画（splitter 从上到下，l1 从下到上）
+		self._start_intro_animation_for_pin()
+
+	def _start_intro_animation_for_pin(self):
+		"""pin_a_tab 专用的启动动画（不包含初始隐藏逻辑）"""
+		screen_height = self._pin_screen_height
+
+		# 保存目标位置
+		qw0_target_y = 0  # qw0 的目标 Y 位置通常是 0
+		l1_target_y = screen_height - 215
+
+		# 设置初始位置
+		self.qw0.move(self.qw0.x(), -self.qw0.height())
+		self.l1.move(self.l1.x(), screen_height + 50)
+
+		# 隐藏需要淡入的组件
+		self.qw1.setVisible(False)
+		self.btn_00.setVisible(False)
+		self.btn0_1.setVisible(False)
+		self.btn0_2.setVisible(False)
+
+		# 创建 qw0 从上到下的动画
+		self._anim_qw0 = QPropertyAnimation(self.qw0, b"pos", self)
+		self._anim_qw0.setDuration(600)
+		self._anim_qw0.setStartValue(self.qw0.pos())
+		self._anim_qw0.setEndValue(self.qw0.pos().__class__(self.qw0.x(), qw0_target_y))
+		self._anim_qw0.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+		# 创建 l1 从下到上的动画
+		self._anim_l1 = QPropertyAnimation(self.l1, b"pos", self)
+		self._anim_l1.setDuration(600)
+		self._anim_l1.setStartValue(self.l1.pos())
+		self._anim_l1.setEndValue(self.l1.pos().__class__(self.l1.x(), l1_target_y))
+		self._anim_l1.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+		# 并行执行两个滑动动画
+		self._slide_group = QParallelAnimationGroup(self)
+		self._slide_group.addAnimation(self._anim_qw0)
+		self._slide_group.addAnimation(self._anim_l1)
+		self._slide_group.finished.connect(self._start_fade_in_animation)
+		self._slide_group.start()
+
+	def _start_pin_hide_animation(self, screen_height, callback):
+		"""pin_a_tab 隐藏时的动画：所有组件同时退场"""
+		self._pin_hide_callback = callback
+		self._pin_hide_screen_height = screen_height
+
+		# 确保清除之前可能残留的透明度效果
+		self.btn_00.setGraphicsEffect(None)
+
+		# 创建主动画组（所有动画同时进行）
+		self._hide_anim_group = QParallelAnimationGroup(self)
+
+		# 1. qw0 向上移出屏幕
+		self._anim_qw0_hide = QPropertyAnimation(self.qw0, b"pos", self)
+		self._anim_qw0_hide.setDuration(400)
+		self._anim_qw0_hide.setStartValue(self.qw0.pos())
+		self._anim_qw0_hide.setEndValue(self.qw0.pos().__class__(self.qw0.x(), -self.qw0.height()))
+		self._anim_qw0_hide.setEasingCurve(QEasingCurve.Type.InCubic)
+		self._hide_anim_group.addAnimation(self._anim_qw0_hide)
+
+		# 2. l1 向下移出屏幕
+		self._anim_l1_hide = QPropertyAnimation(self.l1, b"pos", self)
+		self._anim_l1_hide.setDuration(400)
+		self._anim_l1_hide.setStartValue(self.l1.pos())
+		self._anim_l1_hide.setEndValue(self.l1.pos().__class__(self.l1.x(), screen_height + 50))
+		self._anim_l1_hide.setEasingCurve(QEasingCurve.Type.InCubic)
+		self._hide_anim_group.addAnimation(self._anim_l1_hide)
+
+		# 3. 按钮组件淡出（包括 btn_00）
+		self._hide_opacity_effects = []
+		self._hide_fade_animations = []
+		fade_widgets = [self.qw1, self.btn0_1, self.btn0_2, self.btn_00]
+
+		for widget in fade_widgets:
+			opacity_effect = QGraphicsOpacityEffect(widget)
+			opacity_effect.setOpacity(1.0)
+			widget.setGraphicsEffect(opacity_effect)
+			self._hide_opacity_effects.append(opacity_effect)
+
+			fade_anim = QPropertyAnimation(opacity_effect, b"opacity", self)
+			fade_anim.setDuration(400)
+			fade_anim.setStartValue(1.0)
+			fade_anim.setEndValue(0.0)
+			fade_anim.setEasingCurve(QEasingCurve.Type.InQuad)
+			self._hide_fade_animations.append(fade_anim)
+			self._hide_anim_group.addAnimation(fade_anim)
+
+		self._hide_anim_group.finished.connect(self._on_pin_hide_animation_finished)
+		self._hide_anim_group.start()
+
+	def _on_pin_hide_animation_finished(self):
+		"""隐藏动画完成后的清理和回调"""
+		# 移除透明度效果（包括 btn_00）
+		for widget in [self.qw1, self.btn0_1, self.btn0_2, self.btn_00]:
+			widget.setGraphicsEffect(None)
+
+		# 隐藏组件
+		self.qw0.setVisible(False)
+		self.qw1.setVisible(False)
+		self.l1.setVisible(False)
+		self.btn_00.setVisible(False)
+		self.btn0_1.setVisible(False)
+
+		# 清理
+		self._hide_opacity_effects = []
+		self._hide_fade_animations = []
+
+		# 先执行回调（设置 btn_00 位置、窗口缩小移动）
+		if self._pin_hide_callback:
+			self._pin_hide_callback()
+
+		# 回调执行后，btn_00 淡入显示
+		self.btn_00.setVisible(True)
+		self._btn_00_fadein_effect = QGraphicsOpacityEffect(self.btn_00)
+		self._btn_00_fadein_effect.setOpacity(0.0)
+		self.btn_00.setGraphicsEffect(self._btn_00_fadein_effect)
+
+		self._btn_00_fadein_anim = QPropertyAnimation(self._btn_00_fadein_effect, b"opacity", self)
+		self._btn_00_fadein_anim.setDuration(300)
+		self._btn_00_fadein_anim.setStartValue(0.0)
+		self._btn_00_fadein_anim.setEndValue(1.0)
+		self._btn_00_fadein_anim.setEasingCurve(QEasingCurve.Type.OutQuad)
+		self._btn_00_fadein_anim.finished.connect(self._on_btn_00_fadein_finished)
+		self._btn_00_fadein_anim.start()
+
+	def _on_btn_00_fadein_finished(self):
+		"""btn_00 淡入完成后清理"""
+		self.btn_00.setGraphicsEffect(None)
 
 	def assigntoall(self):
 		cmd = '''on run
@@ -2576,23 +4111,17 @@ The window will float at top all the time as you focus on typing. If you want to
 		screen_y = screen_geom.y()  # 屏幕左上角的y坐标
 		x_center = 0
 		y_center = 0
-		self.show()
 		if self.i % 2 == 1:  # show
 			btna4.setChecked(True)
-			self.btn_00.setFixedHeight(10)
-			self.btn_00.setFixedWidth(1200)
+			# 先设置窗口透明度为0，防止闪现
+			self.setWindowOpacity(0)
+			# 设置 btn_00 的样式（动画会处理位置和尺寸）
 			self.btn_00.setStyleSheet('''
 						border: 1px outset grey;
 						background-color: #0085FF;
 						border-radius: 4px;
 						padding: 1px;
 						color: #FFFFFF''')
-			self.btn_00.move(160, SCREEN_HEIGHT - 35)
-			self.qw0.setVisible(True)
-			self.qw1.setVisible(True)
-			self.l1.setVisible(True)
-			self.btn0_1.setVisible(True)
-			self.btn0_2.setVisible(True)
 			self.setMinimumSize(0, 0)
 			self.setMaximumSize(16777215, 16777215)
 			self.resize(1520, SCREEN_HEIGHT)
@@ -2601,7 +4130,21 @@ The window will float at top all the time as you focus on typing. If you want to
 			x_center = screen_x + int(SCREEN_WEIGHT / 2) - 760
 			y_center = screen_y
 			self.move(screen_x + int(SCREEN_WEIGHT / 2) - 760, screen_y - SCREEN_HEIGHT)
+			# 显示窗口（透明状态）
+			self.show()
+			# 隐藏所有组件，动画会逐步显示它们
+			self.qw0.setVisible(False)
+			self.qw1.setVisible(False)
+			self.l1.setVisible(False)
+			self.btn_00.setVisible(False)
+			self.btn0_1.setVisible(False)
+			self.btn0_2.setVisible(False)
 			self.updatecontent_for_mode()
+			# 用 QTimer 延迟恢复透明度，确保隐藏操作已生效
+			def restore_and_animate():
+				self.setWindowOpacity(1)
+				self._start_pin_show_animation(SCREEN_HEIGHT)
+			QTimer.singleShot(50, restore_and_animate)
 		if self.i % 2 == 0:  # hide
 			if self.notes_mode_enabled and self.notes_dirty:
 				user_choice = self._confirm_notes_save()
@@ -2614,25 +4157,31 @@ The window will float at top all the time as you focus on typing. If you want to
 				if user_choice == "discard":
 					self._set_notes_dirty(False)
 			btna4.setChecked(False)
-			self.btn_00.setFixedHeight(10)
-			self.btn_00.setFixedWidth(100)
-			self.btn_00.setStyleSheet('''
-						border: 1px outset grey;
-						background-color: #FFFFFF;
-						border-radius: 4px;
-						padding: 1px;
-						color: #000000''')
-			self.btn_00.move(0, 0)
-			self.qw0.setVisible(False)
-			self.qw1.setVisible(False)
-			self.l1.setVisible(False)
-			self.btn0_1.setVisible(False)
-			self.btn0_2.setVisible(True)
-			self.setFixedSize(100, 10)
-			# 隐藏时移动到当前屏幕的顶部中央
-			x_center = screen_x + int(SCREEN_WEIGHT / 2) - 50
-			y_center = screen_y
-			self.move(screen_x + int(SCREEN_WEIGHT / 2) - 50, screen_y + SCREEN_HEIGHT)
+
+			# 定义隐藏动画完成后的回调
+			def on_hide_complete():
+				self.btn_00.setFixedHeight(10)
+				self.btn_00.setFixedWidth(100)
+				self.btn_00.setStyleSheet('''
+							border: 1px outset grey;
+							background-color: #FFFFFF;
+							border-radius: 4px;
+							padding: 1px;
+							color: #000000''')
+				self.btn_00.move(0, 0)
+				self.btn0_2.setVisible(True)
+				self.setFixedSize(100, 10)
+				# 隐藏时移动到当前屏幕的顶部中央
+				hide_x = screen_x + int(SCREEN_WEIGHT / 2) - 50
+				hide_y = screen_y
+				self.move(screen_x + int(SCREEN_WEIGHT / 2) - 50, screen_y + SCREEN_HEIGHT)
+				self.move_window(hide_x, hide_y)
+				self.btn_00.raise_()
+				self.btn0_2.raise_()
+
+			# 启动隐藏动画
+			self._start_pin_hide_animation(SCREEN_HEIGHT, on_hide_complete)
+			return  # 动画完成后会执行回调
 
 		self.move_window(x_center, y_center)
 		self.qw0.raise_()
@@ -2692,20 +4241,27 @@ The window will float at top all the time as you focus on typing. If you want to
 		self._set_notes_active(False)
 		self.updatecontent()
 
-	def _confirm_notes_save(self):
-		box = QMessageBox(self)
-		box.setWindowTitle("Unsaved Notes")
-		box.setText("Save changes to this note?")
-		box.setStandardButtons(
-			QMessageBox.StandardButton.Save
-			| QMessageBox.StandardButton.Discard
-			| QMessageBox.StandardButton.Cancel
+	def _show_custom_message_box(self, title, text, buttons, default=0):
+		box = CustomMessageBox(
+			text=text,
+			parent=self,
+			buttons=buttons,
+			default=default,
 		)
-		box.setDefaultButton(QMessageBox.StandardButton.Save)
+		box.setWindowTitle(title)
 		result = box.exec()
-		if result == QMessageBox.StandardButton.Save:
+		return result if result is not None else -1
+
+	def _confirm_notes_save(self):
+		result = self._show_custom_message_box(
+			title="Unsaved Notes",
+			text="Save changes to this note?",
+			buttons=("Save", "Discard", "Cancel"),
+			default=0,
+		)
+		if result == 0:
 			return "save"
-		if result == QMessageBox.StandardButton.Discard:
+		if result == 1:
 			return "discard"
 		return "cancel"
 
@@ -2737,33 +4293,34 @@ The window will float at top all the time as you focus on typing. If you want to
 		self.on_notes_error(message)
 
 	def _confirm_notes_title_change(self, old_title, new_title):
-		box = QMessageBox(self)
-		box.setWindowTitle("Note Title Changed")
-		box.setText(f"The note title will change from \"{old_title}\" to \"{new_title}\".\nContinue saving?")
-		box.setStandardButtons(
-			QMessageBox.StandardButton.Save
-			| QMessageBox.StandardButton.Cancel
+		result = self._show_custom_message_box(
+			title="Note Title Changed",
+			text=f"The note title will change from \"{old_title}\" to \"{new_title}\".\nContinue saving?",
+			buttons=("Save", "Cancel"),
+			default=0,
 		)
-		box.setDefaultButton(QMessageBox.StandardButton.Save)
-		result = box.exec()
-		return result == QMessageBox.StandardButton.Save
+		return result == 0
 
 	def _prompt_notes_reselect(self, folder, title):
+		# 如果已经在等待用户重新选择，不要重复弹窗
+		if self.notes_awaiting_reselect:
+			return
+		# 确保 bottom 被锁定
+		self._set_notes_active(False)
 		location = folder or "Unfiled"
-		box = QMessageBox(self)
-		box.setWindowTitle("Note Not Found")
-		box.setText(
-			f"Couldn't match the current note \"{title}\" in \"{location}\".\n"
-			"Please reselect the note path."
+		result = self._show_custom_message_box(
+			title="Note Not Found",
+			text=(
+				f"Couldn't match the current note \"{title}\" in \"{location}\".\n"
+				"Please reselect the note path."
+			),
+			buttons=("OK", "Cancel"),
+			default=0,
 		)
-		box.setStandardButtons(
-			QMessageBox.StandardButton.Ok
-			| QMessageBox.StandardButton.Cancel
-		)
-		box.setDefaultButton(QMessageBox.StandardButton.Ok)
-		result = box.exec()
-		if result == QMessageBox.StandardButton.Ok:
+		if result == 0:
+			self.notes_awaiting_reselect = True
 			self.open_notes_folder_dialog()
+		# 无论选择 OK 还是 Cancel，bottom 都保持锁定状态直到选择有效路径
 
 	def _notes_title_from_md(self, md):
 		if not md:
@@ -2857,7 +4414,8 @@ QListWidget{{
 """
 		app = QApplication.instance()
 		if app is not None:
-			app.setStyleSheet(style_sheet_ori + "\n" + font_override)
+			base_style = style_sheet_dark if is_dark_theme(app) else style_sheet_ori
+			app.setStyleSheet(base_style + "\n" + font_override)
 		if hasattr(self, "bottom") and hasattr(self, "topleft") and hasattr(self, "topright"):
 			try:
 				previewtext = self.bottom.toPlainText()
@@ -2868,6 +4426,9 @@ QListWidget{{
 					self.topright.setHtml(self.md2html(endbio))
 			except Exception:
 				pass
+		# 重新应用用户选择的背景颜色
+		if hasattr(self, "_current_bg_color") and hasattr(self, "topleft"):
+			self.set_bg_color(self._current_bg_color)
 
 	def splitter1_move(self):
 		if self.topleft.width() == 0 or self.topleft.height() == 0:
@@ -2897,6 +4458,19 @@ QListWidget{{
 	def text_change(self):
 		if self.notes_active:
 			self._set_notes_dirty(True)
+			previewtext = self.bottom.toPlainText()
+			if self.topleftshow == 1:
+				endhtml = self.md2html(previewtext)
+				self.topleft.setHtml(endhtml)
+			if self.toprightshow == 1:
+				endbio = self.addb2(previewtext.replace('*', ''))
+				endhtmlbio = self.md2html(endbio)
+				self.topright.setHtml(endhtmlbio)
+			QTimer.singleShot(100, self.scrollchanged)
+			return
+		# 如果处于 Notes 模式但 notes_active 为 False，不要保存到普通模式文件
+		if self.notes_mode_enabled:
+			# 只更新预览，不保存文件
 			previewtext = self.bottom.toPlainText()
 			if self.topleftshow == 1:
 				endhtml = self.md2html(previewtext)
@@ -3172,44 +4746,50 @@ QListWidget{{
 
 	def _set_notes_dirty(self, dirty):
 		self.notes_dirty = bool(dirty)
-		if self.notes_dirty:
-			self.btn_notes_save.setStyleSheet('''
-				QPushButton{
-				border: 1px outset grey;
-				background-color: #FF4D4D;
-				border-radius: 4px;
-				padding: 1px;
-				color: #FFFFFF
-				}
-				QPushButton:pressed{
-				border: 1px outset grey;
-				background-color: #CC3D3D;
-				border-radius: 4px;
-				padding: 1px;
-				color: #FFFFFF
-				}
-				QPushButton:disabled{
-				border: 1px solid #999999;
-				background-color: #E6E6E6;
-				border-radius: 4px;
-				padding: 1px;
-				color: #777777
-				}
-				''')
+		if hasattr(self.btn_notes_save, "set_alert"):
+			self.btn_notes_save.set_alert(self.notes_dirty)
 		else:
-			self.btn_notes_save.setStyleSheet('''
-				QPushButton:disabled{
-				border: 1px solid #999999;
-				background-color: #E6E6E6;
-				border-radius: 4px;
-				padding: 1px;
-				color: #777777
-				}
-				''')
+			if self.notes_dirty:
+				self.btn_notes_save.setStyleSheet('''
+					QPushButton{
+					border: 1px outset grey;
+					background-color: #FF4D4D;
+					border-radius: 4px;
+					padding: 1px;
+					color: #FFFFFF
+					}
+					QPushButton:pressed{
+					border: 1px outset grey;
+					background-color: #CC3D3D;
+					border-radius: 4px;
+					padding: 1px;
+					color: #FFFFFF
+					}
+					QPushButton:disabled{
+					border: 1px solid #999999;
+					background-color: #E6E6E6;
+					border-radius: 4px;
+					padding: 1px;
+					color: #777777
+					}
+					''')
+			else:
+				self.btn_notes_save.setStyleSheet('''
+					QPushButton:disabled{
+					border: 1px solid #999999;
+					background-color: #E6E6E6;
+					border-radius: 4px;
+					padding: 1px;
+					color: #777777
+					}
+					''')
 
 	def _set_notes_active(self, active):
 		self.notes_active = bool(active)
 		self.btn_notes_save.setEnabled(self.notes_active)
+		# 在 Notes 模式下，根据 active 状态控制 bottom 是否可编辑
+		if self.notes_mode_enabled:
+			self.bottom.setReadOnly(not self.notes_active)
 		if not self.notes_active:
 			self._set_notes_dirty(False)
 
@@ -3226,6 +4806,31 @@ QListWidget{{
 	# 		return
 	# 	screen_geom = self._current_window_screen_geometry()
 	# 	self._apply_screen_geometry(screen_geom)
+
+	def _show_mode_toast(self, mode_name):
+		"""显示模式切换提示，自动消失"""
+		toast = QLabel(mode_name, self)
+		toast.setStyleSheet('''
+			QLabel {
+				background-color: rgba(0, 0, 0, 0.7);
+				color: white;
+				padding: 15px 30px;
+				border-radius: 10px;
+				font-size: 18px;
+				font-weight: bold;
+			}
+		''')
+		toast.setAlignment(Qt.AlignmentFlag.AlignCenter)
+		toast.adjustSize()
+		# 居中显示
+		toast.move(
+			(self.width() - toast.width()) // 2,
+			(self.height() - toast.height()) // 2
+		)
+		toast.show()
+		toast.raise_()
+		# 1.5秒后自动消失
+		QTimer.singleShot(1500, toast.deleteLater)
 
 	def _log_layout_state(self, tag):
 		if not DEBUG_LAYOUT:
@@ -3339,20 +4944,26 @@ QListWidget{{
 		self.notes_wait_target = (folder, title)
 		self.notes_wait_start = time.time()
 		if not self.notes_wait_dialog:
-			self.notes_wait_dialog = QDialog(self)
+			self.notes_wait_dialog = CustomMessageBox(
+				"Updating Notes, please wait...",
+				parent=self,
+				buttons=(),
+				fixed_size=(260, 90),
+			)
 			self.notes_wait_dialog.setWindowTitle("Updating Notes")
-			self.notes_wait_dialog.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
+			self.notes_wait_dialog.setWindowFlags(
+				self.notes_wait_dialog.windowFlags() | Qt.WindowType.WindowStaysOnTopHint
+			)
 			self.notes_wait_dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 			self.notes_wait_dialog.destroyed.connect(self._notes_wait_dialog_destroyed)
-			label = QLabel("Updating Notes, please wait...")
-			layout = QVBoxLayout()
-			layout.addWidget(label)
-			self.notes_wait_dialog.setLayout(layout)
-			self.notes_wait_dialog.setFixedSize(260, 90)
-			qr = self.frameGeometry()
-			cp = self.screen().availableGeometry().center()
-			qr.moveCenter(cp)
-			self.notes_wait_dialog.move(qr.topLeft())
+			self.notes_wait_dialog.body_layout.setContentsMargins(20, 28, 20, 20)
+			# 居中显示
+			screen = QGuiApplication.primaryScreen()
+			if screen:
+				geo = screen.availableGeometry()
+				x = geo.x() + (geo.width() - 260) // 2
+				y = geo.y() + (geo.height() - 90) // 2
+				self.notes_wait_dialog.move(x, y)
 		self.notes_wait_dialog.show()
 		if not self.notes_wait_timer:
 			self.notes_wait_timer = QTimer(self)
@@ -3466,40 +5077,19 @@ QListWidget{{
 		self.notes_mode_enabled = not self.notes_mode_enabled
 		if self.notes_mode_enabled:
 			# self.btn_mode.setText('Mode: Notes')
-			self.btn0_2.setStyleSheet('''
-				QPushButton{
-				border: transparent;
-				background-color: transparent;
-				border-image: url(/Applications/Watermelon.app/Contents/Resources/repeat2.png);
-				}
-				QPushButton:pressed{
-				border: 1px outset grey;
-				background-color: #0085FF;
-				border-radius: 4px;
-				padding: 1px;
-				color: #FFFFFF
-				}
-				''')
+			self.btn0_2.setIconPath('/Applications/Watermelon.app/Contents/Resources/repeat2.png')
 		else:
 			# self.btn_mode.setText('Mode: Local')
-			self.btn0_2.setStyleSheet('''
-				QPushButton{
-				border: transparent;
-				background-color: transparent;
-				border-image: url(/Applications/Watermelon.app/Contents/Resources/repeat.png);
-				}
-				QPushButton:pressed{
-				border: 1px outset grey;
-				background-color: #0085FF;
-				border-radius: 4px;
-				padding: 1px;
-				color: #FFFFFF
-				}
-			''')
+			self.btn0_2.setIconPath('/Applications/Watermelon.app/Contents/Resources/repeat.png')
 			self._set_notes_active(False)
+			# 切换回普通模式时，恢复 bottom 为可编辑状态
+			self.bottom.setReadOnly(False)
 		self._apply_mode_visibility()
 		self.updatecontent_for_mode()
 		QTimer.singleShot(50, lambda: self._log_layout_state("toggle_after"))
+		# 显示模式切换提示
+		mode_name = "Notes Mode" if self.notes_mode_enabled else "Local Mode"
+		self._show_mode_toast(mode_name)
 
 	def open_notes_folder_dialog(self):
 		if self.notes_folder_dialog:
@@ -3508,7 +5098,7 @@ QListWidget{{
 			self.notes_folder_dialog.show()
 			self.load_notes()
 			return
-		self.notes_folder_dialog = NotesFolderDialog(self)
+		self.notes_folder_dialog = NotesFolderDialog()
 		self.notes_folder_dialog.note_selected.connect(self.on_notes_note_selected)
 		self.notes_folder_dialog.destroyed.connect(self._clear_notes_folder_dialog)
 		self.notes_folder_dialog.show()
@@ -3538,6 +5128,21 @@ QListWidget{{
 			if self.notes_require_match_on_show and self.notes_last_title:
 				self.notes_require_match_on_show = False
 				self._prompt_notes_reselect(self.notes_last_folder, self.notes_last_title)
+				return
+		# 如果正在等待用户重新选择路径，不要重复检查
+		if self.notes_awaiting_reselect:
+			return
+		# 如果没有选择新的文件，尝试保持之前的路径
+		if self.notes_current_folder and self.notes_current_title:
+			# 验证之前的路径是否仍然有效
+			check_html = self._read_note_html(self.notes_current_folder, self.notes_current_title)
+			if check_html is not None and check_html.strip():
+				# 之前的路径有效，保持当前状态
+				return
+			else:
+				# 之前的路径无效，锁定编辑器并提示用户
+				self._set_notes_active(False)
+				self._prompt_notes_reselect(self.notes_current_folder, self.notes_current_title)
 				return
 		self.notes_current_folder = None
 		self.notes_current_title = None
@@ -3792,6 +5397,7 @@ QListWidget{{
 		else:
 			note_md = notes_html_to_markdown(note_html, cache_key=note_key)
 		self._set_notes_active(True)
+		self.notes_awaiting_reselect = False  # 成功加载笔记，重置标志
 		self.notes_current_title = title
 		self.bottom.blockSignals(True)
 		self.bottom.setPlainText(note_md)
@@ -3824,6 +5430,13 @@ QListWidget{{
 			note = self.notes_current_list[current_index]
 		folder = (note.get("folder") or "Unfiled").strip() or "Unfiled"
 		title = note.get("title") or "(Untitled)"
+		# 保存前检查笔记路径是否仍然有效
+		check_html = self._read_note_html(folder, title)
+		if check_html is None or not check_html.strip():
+			# 路径不存在，锁定编辑器并提示用户重新选择
+			self._set_notes_active(False)
+			self._prompt_notes_reselect(folder, title)
+			return
 		note_md = self.bottom.toPlainText()
 		new_title = self._notes_title_from_md(note_md)
 		if new_title and new_title != title:
@@ -3835,7 +5448,9 @@ QListWidget{{
 		try:
 			self._write_note_html(folder, title, note_html)
 		except Exception:
-			self._set_notes_dirty(True)
+			# 写入失败，可能是路径不存在，锁定编辑器并提示用户
+			self._set_notes_active(False)
+			self._prompt_notes_reselect(folder, title)
 			return
 		note_key = f"{folder}/{title}"
 		delete_cache_file(note_key)
@@ -4514,6 +6129,8 @@ QListWidget{{
 		middlehtml = html % ret
 		font_family = getattr(self, "_current_font_family", None) or self._resolve_font_family()
 		font_size = getattr(self, "_current_font_size", None) or self._read_font_size()
+		bg_color = getattr(self, "_current_bg_color", "#FFFFFF")
+		text_color = '#FFFFFF' if is_dark_theme(app) else '#000000'
 		html_content = """
 		<!DOCTYPE html>
 		<html lang="en">
@@ -4524,14 +6141,18 @@ QListWidget{{
 						  font-size: %dpx;
 						  font-family: "%s";
 						  padding: 0;
-						  background-color: #F3F2EE;
+						  background-color: %s;
+						  color: %s;
+					 }
+					 table, th, td {
+						  color: %s !important;
 					 }
 				</style>
 				<meta charset="UTF-8">
 				<meta name="viewport" content="width=device-width, initial-scale=1.0">
 				<script
 					 src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-MML-AM_CHTML">
-				</script>	
+				</script>
 		</head>
 		<body>
 				%s
@@ -4552,25 +6173,116 @@ QListWidget{{
 				</script>
 		</body>
 		</html>
-		""" % (font_size, font_family, middlehtml)
+		""" % (font_size, font_family, bg_color, text_color, text_color, middlehtml)
 		return html_content
+	
+	@pyqtSlot(str)
+	def on_update_available(self, latest: str):
+		# 这里只在主线程里创建窗口或弹窗
+		# 你可以复用已有的 WindowUpdate 或者弹一个你的自定义对话框
+		# 例：用你已有的 RestartMessageBox/CustomMessageBox 风格
+		msg = CustomMessageBox(
+			self.tr(f"New version %n is available. Open release note page?").replace('%n', latest),
+			parent=self,
+			buttons=(self.tr("Open"), self.tr("Later"))
+		)
+		res = msg.exec()
+		if res == 0:
+			webbrowser.open('https://github.com/Ryan-the-hito/Watermelon/releases')
+
+	# 或者你也可以这样：仅在有更新时展示现有的 WindowUpdate 小窗
+	# self.win_update.show()  # 它会 show() 并 checkupdate()，但建议只 show，然后把 latest 显示出来
+
+	@pyqtSlot(str)
+	def on_update_checked_ok(self, latest: str):
+		# 可选：比如在日志里记录或更新某个状态标签（主线程里的标签）
+		# print(f"Checked latest: {latest}")
+		pass
+
+	@pyqtSlot(str)
+	def on_update_checked_error(self, err: str):
+		# 可选：记录错误，不弹框打扰用户
+		# print(f"Check update error: {err}")
+		pass
 
 class window4(QWidget):  # Customization settings
 	def __init__(self):
 		super().__init__()
-		self.initUI()
+		self.radius = 16  # 圆角半径，可按 macOS 15 或 26 设置为 16~26
 
-	def initUI(self):  # 设置窗口内布局
+		self.setWindowFlags(
+			Qt.WindowType.FramelessWindowHint |
+			Qt.WindowType.Window |
+			Qt.WindowType.WindowStaysOnTopHint
+		)
+		self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+		self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+
+		self.init_ui()
+
+	def init_ui(self):
 		self.setUpMainWindow()
-		self.resize(640, 400)
+		self.setFixedSize(640, 550)
 		self.center()
-		self.setWindowTitle('Customization settings')
 		self.setFocus()
-		self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
+
+	def paintEvent(self, event):
+		painter = QPainter(self)
+		painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+		painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+		rect = QRectF(self.rect())
+		path = QPainterPath()
+		path.addRoundedRect(rect, self.radius, self.radius)
+
+		painter.setClipPath(path)
+		bg_color = self.palette().color(QPalette.ColorRole.Window)
+		painter.fillPath(path, bg_color)
+
+	# 让无边框窗口可拖动
+	def mousePressEvent(self, event):
+		if event.button() == Qt.MouseButton.LeftButton:
+			self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+			event.accept()
+
+	def mouseMoveEvent(self, event):
+		if event.buttons() == Qt.MouseButton.LeftButton:
+			self.move(event.globalPosition().toPoint() - self.drag_pos)
+			event.accept()
+	# def __init__(self):
+	# 	super().__init__()
+	# 	self.initUI()
+
+	# def initUI(self):  # 设置窗口内布局
+	# 	self.setUpMainWindow()
+	# 	self.resize(640, 400)
+	# 	self.center()
+	# 	self.setWindowTitle('Customization settings')
+	# 	self.setFocus()
+	# 	self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
 
 	def setUpMainWindow(self):
+		# 添加关闭按钮（仿 macOS 左上角红色圆点）
+		# self.close_button = QPushButton(self)
+		# self.close_button.setFixedSize(12, 12)
+		# self.close_button.move(10, 10)
+		# self.close_button.setStyleSheet("""
+		#			 QPushButton {
+		#				 background-color: #FF5F57;
+		#				 border-radius: 6px;
+		#				 border: none;
+		#			 }
+		#			 QPushButton:hover {
+		#				 background-color: #BF4943;
+		#			 }
+		#		 """)
+		# self.close_button.clicked.connect(self.close)
+		self.close_button = MacWindowButton("#FF605C", "x", self)
+		self.close_button.move(10, 10)
+		self.close_button.clicked.connect(self.close)
+
 		wid0 = QWidget()
-		lbl0 = QLabel("Manage recent files", self)
+		lbl0 = QLabel("<h2>Manage recent files</h2>", self)
 		font = PyQt6.QtGui.QFont()
 		font.setBold(True)
 		lbl0.setFont(font)
@@ -4592,21 +6304,21 @@ class window4(QWidget):  # Customization settings
 		wid1.setLayout(b41)
 
 		wid11 = QWidget()
-		self.btn4_1 = QPushButton('Delete', self)
-		self.btn4_1.setMaximumHeight(20)
+		self.btn4_1 = WhiteButton('Delete', self)
+		# self.btn4_1.setFixedHeight(20)
 		self.btn4_1.setFixedWidth(250)
 		self.btn4_1.setVisible(False)
 		self.btn4_1.clicked.connect(self.delete_item)
-		btn4_11 = QPushButton('Save', self)
+		btn4_11 = WhiteButton('Save', self)
 		btn4_11.clicked.connect(self.SaveFeed)
-		btn4_11.setMaximumHeight(20)
+		# btn4_11.setFixedHeight(20)
 		btn4_11.setFixedWidth(250)
 		b411 = QHBoxLayout()
-		b411.setContentsMargins(0, 0, 0, 0)
-		b411.addStretch()
+		b411.setContentsMargins(0, 8, 0, 8)
+		# b411.addStretch()
 		b411.addWidget(self.btn4_1)
 		b411.addWidget(btn4_11)
-		b411.addStretch()
+		# b411.addStretch()
 		wid11.setLayout(b411)
 
 		self.checkBox0 = QCheckBox('Automatically scroll simultaneously', self)
@@ -4616,6 +6328,16 @@ class window4(QWidget):  # Customization settings
 		self.checkBox_top = QCheckBox('Always on top', self)
 		self.checkBox_top.setChecked(w3.is_always_on_top())
 		self.checkBox_top.clicked.connect(self.toggle_on_top)
+
+		self.checkBox_eye_care = QCheckBox('Eye care mode', self)
+		# 读取用户偏好设置（默认是白色，勾选变护眼色）
+		bg_pref_file = BasePath + 'bg_color.txt'
+		if os.path.exists(bg_pref_file):
+			bg_pref = codecs.open(bg_pref_file, 'r', encoding='utf-8').read().strip()
+			self.checkBox_eye_care.setChecked(bg_pref == 'cream')
+		else:
+			self.checkBox_eye_care.setChecked(False)
+		self.checkBox_eye_care.clicked.connect(self.toggle_bg_color)
 
 		self.widget1 = QComboBox(self)
 		self.widget1.addItems(['Last used', 'Default font'])
@@ -4632,6 +6354,7 @@ class window4(QWidget):  # Customization settings
 		b43.setContentsMargins(0, 0, 0, 0)
 		b43.addWidget(self.checkBox0)
 		b43.addWidget(self.checkBox_top)
+		b43.addWidget(self.checkBox_eye_care)
 		b43.addWidget(self.widget1)
 		wid3.setLayout(b43)
 
@@ -4662,7 +6385,7 @@ class window4(QWidget):  # Customization settings
 		main_h_box.addWidget(wid11)
 		main_h_box.addWidget(wid3)
 		main_h_box.addWidget(wid2)
-		main_h_box.addStretch()
+		# main_h_box.addStretch()
 		self.setLayout(main_h_box)
 
 		home_dir = str(Path.home())
@@ -4800,6 +6523,16 @@ class window4(QWidget):  # Customization settings
 	def toggle_on_top(self):
 		w3.set_always_on_top(self.checkBox_top.isChecked())
 
+	def toggle_bg_color(self):
+		use_eye_care = self.checkBox_eye_care.isChecked()
+		pref = 'cream' if use_eye_care else 'white'
+		bg_color = _resolve_bg_color(pref, is_dark_theme(app))
+		# 保存用户偏好
+		with open(BasePath + 'bg_color.txt', 'w', encoding='utf-8') as f0:
+			f0.write(pref)
+		# 更新w3中的组件背景颜色
+		w3.set_bg_color(bg_color)
+
 	def value_change(self, value):
 		self.lbl2.setText(str(value))
 		self.lbl2.adjustSize()
@@ -4898,11 +6631,11 @@ style_sheet_ori = '''
 		color: #FFFFFF
 }
 	QPlainTextEdit{
-		border: 1px solid grey;  
+		border: 1px solid grey;
 		border-radius:4px;
-		padding: 1px 5px 1px 3px; 
+		padding: 1px 5px 1px 3px;
 		background-clip: border;
-		background-color: #F3F2EE;
+		background-color: #FFFFFF;
 		color: #000000;
 		font: 14pt Times New Roman;
 }
@@ -4921,11 +6654,11 @@ style_sheet_ori = '''
 		background-color: #FFFFFF;
 }
 	QTextEdit{
-		border: 1px solid grey;  
+		border: 1px solid grey;
 		border-radius:4px;
-		padding: 1px 5px 1px 3px; 
+		padding: 1px 5px 1px 3px;
 		background-clip: border;
-		background-color: #F3F2EE;
+		background-color: #FFFFFF;
 		color: #000000;
 		font: 14pt Times New Roman;
 }
@@ -4934,35 +6667,117 @@ style_sheet_ori = '''
 		border-radius:4px;
 		padding: 0px;
 		background-clip: border;
-		background-color: #F3F2EE;
+		background-color: #FFFFFF;
 }
 	QWebEngineView{
 		border: 0px;
 }
 	QListWidget{
-        border: 1px solid grey;  
+        border: 1px solid grey;
         border-radius:4px;
-        padding: 1px 5px 1px 3px; 
+        padding: 1px 5px 1px 3px;
         background-clip: border;
-        background-color: #F3F2EE;
+        background-color: #FFFFFF;
         color: #000000;
         font: 14pt Times New Roman;
 }
-	QMessageBox QPushButton {
-		min-width: 100px;
-		height: 20px;
+'''
+
+style_sheet_dark = '''
+	QTabWidget::pane {
+		border: 1px solid #2D2D2D;
+		background: #2D2D2D;
+		border-radius: 9px;
+}
+	QWidget#Main {
+		border: 1px solid #2D2D2D;
+		background: #2D2D2D;
+		border-radius: 9px;
+}
+	QPushButton{
+		border: 1px outset grey;
+		background-color: #3A3A3A;
+		border-radius: 4px;
+		padding: 1px;
+		color: #FFFFFF
+}
+	QPushButton:pressed{
+		border: 1px outset grey;
+		background-color: #0085FF;
+		border-radius: 4px;
+		padding: 1px;
+		color: #FFFFFF
+}
+	QPlainTextEdit{
+		border: 1px solid grey;
+		border-radius:4px;
+		padding: 1px 5px 1px 3px;
+		background-clip: border;
+		background-color: #3A3A3A;
+		color: #FFFFFF;
+		font: 14pt Times New Roman;
+}
+	QPlainTextEdit#edit{
+		border: 1px solid grey;
+		border-radius:4px;
+		padding: 1px 5px 1px 3px;
+		background-clip: border;
+		background-color: #3A3A3A;
+		color: #CCCCCC;
+		font: 14pt Helvetica;
+}
+	QLineEdit{
+		border-radius:4px;
+		border: 1px solid gray;
+		background-color: #3A3A3A;
+		color: #FFFFFF;
+}
+	QTextEdit{
+		border: 1px solid grey;
+		border-radius:4px;
+		padding: 1px 5px 1px 3px;
+		background-clip: border;
+		background-color: #3A3A3A;
+		color: #FFFFFF;
+		font: 14pt Times New Roman;
+}
+	QFrame#webFrame{
+		border: 1px solid grey;
+		border-radius:4px;
+		padding: 0px;
+		background-clip: border;
+		background-color: #3A3A3A;
+}
+	QWebEngineView{
+		border: 0px;
+}
+	QListWidget{
+		border: 1px solid grey;
+		border-radius:4px;
+		padding: 1px 5px 1px 3px;
+		background-clip: border;
+		background-color: #3A3A3A;
+		color: #FFFFFF;
+		font: 14pt Times New Roman;
+}
+	QLabel{
+		color: #FFFFFF;
 }
 '''
 
 
 if __name__ == '__main__':
-	w1 = window_about()
-	w2 = window_update()
+	# Apply theme (dark/light mode)
+	if is_dark_theme(app):
+		app.setStyleSheet(style_sheet_dark)
+	else:
+		app.setStyleSheet(style_sheet_ori)
+
+	w1 = WindowAbout()
+	w2 = WindowUpdate()
 	w3 = window3()  # Main window
 	w3.setAutoFillBackground(True)
-	p = w3.palette()
-	p.setColor(w3.backgroundRole(), QColor('#ECECEC'))
-	w3.setPalette(p)
+	_apply_window_palette(w3, is_dark_theme(app))
 	w4 = window4()
 	action1.triggered.connect(w3.addb)
 	action2.triggered.connect(w3.pin_a_tab)
@@ -4975,4 +6790,5 @@ if __name__ == '__main__':
 	w3.btn0_1.clicked.connect(w4.activate)
 	w3.btn0_2.clicked.connect(w3.toggle_notes_mode)
 	w3.set_textedit_font(w3._current_font_size, w3._current_font_family)
+	apply_bg_color_from_pref(w3)
 	app.exec()
