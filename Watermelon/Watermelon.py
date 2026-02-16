@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (QWidget, QPushButton, QApplication,
 							 QSplitter, QTextEdit, QListWidget, QCheckBox, QSlider,
 							 QFrame, QGraphicsDropShadowEffect, QDialog, QGraphicsOpacityEffect)
 from PyQt6.QtCore import Qt, QPropertyAnimation, QRect, QTimer, QThread, pyqtSignal, QSize, QEvent, QRectF, QEventLoop, pyqtSlot, QParallelAnimationGroup, QSequentialAnimationGroup, QEasingCurve
-from PyQt6.QtGui import QAction, QIcon, QColor, QFontDatabase, QPixmap, QCursor, QGuiApplication, QPainter, QPen, QPainterPath, QPalette, QFont, QSurfaceFormat, QBrush, QLinearGradient, QImage, QMouseEvent
+from PyQt6.QtGui import QAction, QActionGroup, QIcon, QColor, QFontDatabase, QPixmap, QCursor, QGuiApplication, QPainter, QPen, QPainterPath, QPalette, QFont, QSurfaceFormat, QBrush, QLinearGradient, QImage, QMouseEvent
 import PyQt6.QtGui
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 import sys
@@ -31,6 +31,7 @@ import requests
 from bs4 import BeautifulSoup, NavigableString, Tag
 import html2text
 import subprocess
+import threading
 import os
 from pathlib import Path
 import markdown2
@@ -59,7 +60,7 @@ app.setQuitOnLastWindowClosed(False)
 BasePath = '/Applications/Watermelon.app/Contents/Resources/'
 #BasePath = ''
 
-VERSION = "2.2.2"
+VERSION = "2.2.3"
 NAME = 'Watermelon'
 
 os.environ["QT_QUICK_BACKEND"] = "metal"
@@ -70,6 +71,168 @@ QSurfaceFormat.setDefaultFormat(fmt)
 
 NOTES_CACHE_PATH = os.path.join(BasePath, "notes_cache.json")
 DEBUG_LAYOUT = False
+
+MODE_BACKUP_LIMIT_MIN = 10
+MODE_BACKUP_LIMIT_MAX = 20
+DEFAULT_MODE_BACKUP_LIMIT = 20
+DEFAULT_AUTO_UPDATE_CHECK_ENABLED = True
+DEFAULT_UPDATE_ALERT_DEDUPE_ENABLED = True
+
+
+def _watermelon_app_path():
+	app_path = os.path.join(str(Path.home()), "WatermelonAppPath")
+	os.makedirs(app_path, exist_ok=True)
+	return app_path
+
+
+MODE_BACKUP_LIMIT_FILE = os.path.join(_watermelon_app_path(), "backup_limit.txt")
+AUTO_UPDATE_CHECK_FILE = os.path.join(_watermelon_app_path(), "auto_update_check.txt")
+UPDATE_ALERT_DEDUPE_FILE = os.path.join(_watermelon_app_path(), "update_alert_dedupe.txt")
+
+
+def _normalize_mode_backup_limit(value):
+	try:
+		limit = int(value)
+	except Exception:
+		return DEFAULT_MODE_BACKUP_LIMIT
+	if limit < MODE_BACKUP_LIMIT_MIN:
+		return MODE_BACKUP_LIMIT_MIN
+	if limit > MODE_BACKUP_LIMIT_MAX:
+		return MODE_BACKUP_LIMIT_MAX
+	return limit
+
+
+def save_mode_backup_limit(limit):
+	normalized = _normalize_mode_backup_limit(limit)
+	try:
+		with open(MODE_BACKUP_LIMIT_FILE, 'w', encoding='utf-8') as f0:
+			f0.write(str(normalized))
+	except Exception:
+		pass
+	return normalized
+
+
+def load_mode_backup_limit():
+	try:
+		if not os.path.exists(MODE_BACKUP_LIMIT_FILE):
+			save_mode_backup_limit(DEFAULT_MODE_BACKUP_LIMIT)
+			return DEFAULT_MODE_BACKUP_LIMIT
+		raw = codecs.open(MODE_BACKUP_LIMIT_FILE, 'r', encoding='utf-8').read().strip()
+		normalized = _normalize_mode_backup_limit(raw)
+		if str(normalized) != raw:
+			save_mode_backup_limit(normalized)
+		return normalized
+	except Exception:
+		return DEFAULT_MODE_BACKUP_LIMIT
+
+
+def save_auto_update_check_enabled(enabled):
+	value = '1' if bool(enabled) else '0'
+	try:
+		with open(AUTO_UPDATE_CHECK_FILE, 'w', encoding='utf-8') as f0:
+			f0.write(value)
+	except Exception:
+		pass
+	return bool(enabled)
+
+
+def load_auto_update_check_enabled():
+	default_value = DEFAULT_AUTO_UPDATE_CHECK_ENABLED
+	try:
+		if not os.path.exists(AUTO_UPDATE_CHECK_FILE):
+			save_auto_update_check_enabled(default_value)
+			return default_value
+		raw = codecs.open(AUTO_UPDATE_CHECK_FILE, 'r', encoding='utf-8').read().strip()
+		if raw in ('1', 'true', 'True', 'on', 'ON'):
+			return True
+		if raw in ('0', 'false', 'False', 'off', 'OFF'):
+			return False
+		save_auto_update_check_enabled(default_value)
+		return default_value
+	except Exception:
+		return default_value
+
+
+def save_update_alert_dedupe_enabled(enabled):
+	value = '1' if bool(enabled) else '0'
+	try:
+		with open(UPDATE_ALERT_DEDUPE_FILE, 'w', encoding='utf-8') as f0:
+			f0.write(value)
+	except Exception:
+		pass
+	return bool(enabled)
+
+
+def load_update_alert_dedupe_enabled():
+	default_value = DEFAULT_UPDATE_ALERT_DEDUPE_ENABLED
+	try:
+		if not os.path.exists(UPDATE_ALERT_DEDUPE_FILE):
+			save_update_alert_dedupe_enabled(default_value)
+			return default_value
+		raw = codecs.open(UPDATE_ALERT_DEDUPE_FILE, 'r', encoding='utf-8').read().strip()
+		if raw in ('1', 'true', 'True', 'on', 'ON'):
+			return True
+		if raw in ('0', 'false', 'False', 'off', 'OFF'):
+			return False
+		save_update_alert_dedupe_enabled(default_value)
+		return default_value
+	except Exception:
+		return default_value
+
+
+backup_limit_actions = {}
+
+
+def _refresh_backup_limit_menu(selected=None):
+	if selected is None:
+		selected = load_mode_backup_limit()
+	for value, action in backup_limit_actions.items():
+		action.setChecked(value == selected)
+
+
+def _set_backup_limit_from_menu(limit):
+	selected = save_mode_backup_limit(limit)
+	_refresh_backup_limit_menu(selected)
+	target = globals().get("w3")
+	if target is not None:
+		try:
+			target.apply_backup_limit_now(selected)
+		except Exception:
+			pass
+
+
+def _set_auto_update_check_from_menu(checked):
+	enabled = save_auto_update_check_enabled(checked)
+	if 'auto_update_check_action' in globals():
+		try:
+			auto_update_check_action.blockSignals(True)
+			auto_update_check_action.setChecked(enabled)
+			auto_update_check_action.blockSignals(False)
+		except Exception:
+			pass
+	target = globals().get("w3")
+	if target is not None:
+		try:
+			target.set_auto_update_check_enabled(enabled)
+		except Exception:
+			pass
+
+
+def _set_update_alert_dedupe_from_menu(checked):
+	enabled = save_update_alert_dedupe_enabled(checked)
+	if 'update_alert_dedupe_action' in globals():
+		try:
+			update_alert_dedupe_action.blockSignals(True)
+			update_alert_dedupe_action.setChecked(enabled)
+			update_alert_dedupe_action.blockSignals(False)
+		except Exception:
+			pass
+	target = globals().get("w3")
+	if target is not None:
+		try:
+			target.set_update_alert_dedupe_enabled(enabled)
+		except Exception:
+			pass
 
 # Create the icon
 icon = QIcon(BasePath + "wtmenu.icns")
@@ -96,14 +259,46 @@ menu.addSeparator()
 
 action2 = QAction("✍️ Watermelon Typewriter")
 menu.addAction(action2)
+action8 = QAction("🖥️ Assign to All Desktops")
+menu.addAction(action8)
 
 action6 = QAction("⚙️ Settings")
 menu.addAction(action6)
+
+backup_limit_menu = menu.addMenu("💾 Backup Limit")
+backup_limit_group = QActionGroup(menu)
+backup_limit_group.setExclusive(True)
+for value in range(MODE_BACKUP_LIMIT_MIN, MODE_BACKUP_LIMIT_MAX + 1):
+	limit_action = QAction(str(value), menu)
+	limit_action.setCheckable(True)
+	limit_action.triggered.connect(lambda checked=False, v=value: _set_backup_limit_from_menu(v))
+	backup_limit_group.addAction(limit_action)
+	backup_limit_menu.addAction(limit_action)
+	backup_limit_actions[value] = limit_action
+_refresh_backup_limit_menu(load_mode_backup_limit())
+
+teleprompter_action = QAction("📺 Teleprompter Mode")
+teleprompter_action.setCheckable(True)
+menu.addAction(teleprompter_action)
+open_backup_folder_action = QAction("🗂️ Open Current Backup Folder")
+menu.addAction(open_backup_folder_action)
 
 menu.addSeparator()
 
 action5 = QAction("🆕 Check for Updates")
 menu.addAction(action5)
+
+auto_update_check_action = QAction("🔄 Auto Check Updates (24h)")
+auto_update_check_action.setCheckable(True)
+auto_update_check_action.setChecked(load_auto_update_check_enabled())
+auto_update_check_action.triggered.connect(_set_auto_update_check_from_menu)
+menu.addAction(auto_update_check_action)
+
+update_alert_dedupe_action = QAction("⏺️ No Alert for the Same Update")
+update_alert_dedupe_action.setCheckable(True)
+update_alert_dedupe_action.setChecked(load_update_alert_dedupe_enabled())
+update_alert_dedupe_action.triggered.connect(_set_update_alert_dedupe_from_menu)
+menu.addAction(update_alert_dedupe_action)
 
 action3 = QAction("ℹ️ About")
 menu.addAction(action3)
@@ -358,6 +553,17 @@ def is_macos_16_or_higher():
 		return major >= 16
 	except Exception:
 		return False
+
+
+def play_sound_async(filepath):
+	"""在后台线程中播放声音文件，播放完自动清除线程"""
+	def _play():
+		try:
+			subprocess.call(['afplay', filepath])
+		except Exception:
+			pass
+	t = threading.Thread(target=_play, daemon=True)
+	t.start()
 
 
 class GlassButton(QPushButton):
@@ -2869,6 +3075,88 @@ def markdown_to_html(md):
 	return markdown2.markdown(md, extras=extras)
 
 
+def _bionic_transform_text(text):
+	if text is None:
+		return ""
+	esj = str(text)
+	aj = jieba.cut(esj, cut_all=False)
+	paj = '/'.join(aj)
+	saj = paj.split('/')
+
+	for i in range(len(saj)):
+		item = str(saj[i])
+		if not (re.search('[a-zA-Zａ-ｚＡ-Ｚ]', item) or re.search('[0-9０-９]', item) or any('\u4e00' <= ch <= '\u9fff' for ch in item)):
+			continue
+		if len(item) == 1:
+			saj[i] = '**' + item + '**'
+			continue
+		if 'ing' in item:
+			item = item.replace('ing', '**ing')
+			item = item.replace('**ing**ing', 'ing**ing')
+			lst = list(item)
+			lst.insert(0, '**')
+			saj[i] = ''.join(lst)
+			continue
+		if len(item) % 2 == 0:
+			lst = list(item)
+			half = len(item) // 2
+			lst.insert(half, '**')
+			lst.insert(0, '**')
+			saj[i] = ''.join(lst)
+			continue
+		lst = list(item)
+		lst.insert(0, '**')
+		idx = int((len(item) + 1) / 2) + 1
+		lst.insert(idx, '**')
+		saj[i] = ''.join(lst)
+
+	esj = ''.join(saj)
+	i = 0
+	while i <= len(esj) - 1:
+		prev_ch = esj[i - 1] if i > 0 else ''
+		if esj[i] in ('¥', '$') and not bool(re.search(r"\W", prev_ch)):
+			esj = list(esj)
+			esj.insert(i, ' ')
+			esj = ''.join(esj)
+			i += 2
+			continue
+		if esj[i] in ('%', '°'):
+			if prev_ch == ' ':
+				esj = list(esj)
+				del esj[i - 1]
+				esj = ''.join(esj)
+				i -= 1
+				continue
+			esj = list(esj)
+			esj.insert(i + 1, ' ')
+			esj = ''.join(esj)
+			i += 2
+			continue
+		i += 1
+
+	i = 0
+	while i >= 0 and i < len(esj) - 1:
+		cur = esj[i]
+		nxt = esj[i + 1]
+		cur_zh = any('\u4e00' <= ch <= '\u9fff' for ch in cur)
+		nxt_zh = any('\u4e00' <= ch <= '\u9fff' for ch in nxt)
+		cur_en = bool(re.search('[a-zA-Zａ-ｚＡ-Ｚ]', cur))
+		nxt_en = bool(re.search('[a-zA-Zａ-ｚＡ-Ｚ]', nxt))
+		cur_num = bool(re.search('[0-9０-９]', cur))
+		nxt_num = bool(re.search('[0-9０-９]', nxt))
+		if (cur_zh and nxt_en) or (cur_zh and nxt_num) or (nxt_zh and cur_num) or (cur_num and nxt_en) or (nxt_num and cur_en) or (nxt_zh and cur_en):
+			esj = list(esj)
+			esj.insert(i + 1, ' ')
+			esj = ''.join(esj)
+			i += 1
+			continue
+		i += 1
+
+	esj = esj.replace('  ', ' ')
+	esj = esj.replace('****', '')
+	return esj
+
+
 def notes_html_to_markdown(html, cache_key=None, force_html=False):
 	if not html:
 		return ""
@@ -3102,16 +3390,50 @@ class NotesLoader(QThread):
 		self.finished.emit(notes)
 
 
+class PreviewRenderWorker(QThread):
+	rendered = pyqtSignal(int, object, object)
+	failed = pyqtSignal(int, str)
+
+	def __init__(self, request_id, markdown_text, render_left, render_right, parent=None):
+		super().__init__(parent)
+		self.request_id = request_id
+		self.markdown_text = markdown_text
+		self.render_left = render_left
+		self.render_right = render_right
+
+	def run(self):
+		try:
+			left_html = None
+			right_html = None
+			if self.render_left:
+				left_html = markdown_to_html(self.markdown_text)
+			if self.isInterruptionRequested():
+				return
+			if self.render_right:
+				bio_md = _bionic_transform_text(self.markdown_text.replace('*', ''))
+				if self.isInterruptionRequested():
+					return
+				right_html = markdown_to_html(bio_md)
+			if self.isInterruptionRequested():
+				return
+			self.rendered.emit(self.request_id, left_html, right_html)
+		except Exception as exc:
+			self.failed.emit(self.request_id, str(exc))
+
+
 class NotesFolderDialog(CustomMessageBox):
 	note_selected = pyqtSignal(object)
 
 	def __init__(self):
 		super().__init__(text=None, buttons=(), fixed_size=None)
+		self.radius = 16  # 圆角半径，可按 macOS 15 或 26 设置为 16~26
+
 		self.setWindowTitle("Select Notes")
 		self.center()
 		self.resize(520, 320)
 		self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
 		self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+		self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
 		self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 		# self._centered_once = False
 		self.body_layout.setContentsMargins(20, 28, 20, 20)
@@ -3161,9 +3483,33 @@ class NotesFolderDialog(CustomMessageBox):
 		blay3.addWidget(splitter)
 		blay3.addLayout(btn_row)
 		w3.setLayout(blay3)
-		w3.setObjectName("Main")
+		#w3.setObjectName("Main")
 
 		self.body_layout.addWidget(w3)
+
+	def paintEvent(self, event):
+		painter = QPainter(self)
+		painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+		painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+		rect = QRectF(self.rect())
+		path = QPainterPath()
+		path.addRoundedRect(rect, self.radius, self.radius)
+
+		painter.setClipPath(path)
+		bg_color = self.palette().color(QPalette.ColorRole.Window)
+		painter.fillPath(path, bg_color)
+
+	# 让无边框窗口可拖动
+	def mousePressEvent(self, event):
+		if event.button() == Qt.MouseButton.LeftButton:
+			self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+			event.accept()
+
+	def mouseMoveEvent(self, event):
+		if event.buttons() == Qt.MouseButton.LeftButton:
+			self.move(event.globalPosition().toPoint() - self.drag_pos)
+			event.accept()
 
 	# def showEvent(self, event):
 	# 	super().showEvent(event)
@@ -3190,7 +3536,7 @@ class NotesFolderDialog(CustomMessageBox):
 		self.populate_folders()
 		self.apply_filter(self.search_input.text())
 		if notes:
-			self.set_status("Select a note.")
+			self.set_status("Select a note:")
 		else:
 			self.set_status("No notes found.")
 
@@ -3262,6 +3608,9 @@ class window3(QWidget):  # 主窗口
 		self._screen_signals_connected = False
 		self._tracked_screen = None
 		self._current_bg_color = '#FFFFFF'  # 默认白色背景
+		self._teleprompter_mode = False
+		self.sound_mode_enabled = False
+		self._sound_bell_played = False
 		self.initUI()
 
 	def initUI(self):
@@ -3274,6 +3623,9 @@ class window3(QWidget):  # 主窗口
 		self.i = 1
 		self.notes_loader = None
 		self.notes_cache_worker = None
+		self.update_check_worker = None
+		self.auto_update_check_enabled = load_auto_update_check_enabled()
+		self.update_alert_dedupe_enabled = load_update_alert_dedupe_enabled()
 		self.notes_cache_path = NOTES_CACHE_PATH
 		self.notes_data = []
 		self.notes_current_list = []
@@ -3297,6 +3649,21 @@ class window3(QWidget):  # 主窗口
 		self.notes_wait_timer = None
 		self.notes_wait_target = None
 		self.notes_wait_start = None
+		self.mode_backup_timer = None
+		self._mode_backup_lock = threading.Lock()
+		self._last_local_backup_meta = {}
+		self._last_notes_backup_hash = {}
+		self._update_notice_box = None
+		self._last_notified_update_version = None
+		self.local_mode_backup_root = ""
+		self.notes_mode_backup_root = ""
+		self._preview_render_worker = None
+		self._preview_render_pending_text = None
+		self._preview_render_pending_token = 0
+		self._preview_render_request_token = 0
+		self._preview_render_timer = QTimer(self)
+		self._preview_render_timer.setSingleShot(True)
+		self._preview_render_timer.timeout.connect(self._start_preview_render_worker)
 		self.notes_cache_worker = NotesCacheWorker(self.notes_cache_path, self)
 		self.notes_cache_worker.start()
 
@@ -3305,6 +3672,11 @@ class window3(QWidget):  # 主窗口
 		fulldir1 = os.path.join(home_dir, tarname1)
 		if not os.path.exists(fulldir1):
 			os.mkdir(fulldir1)
+		self.local_mode_backup_root = os.path.join(fulldir1, "Local Mode")
+		self.notes_mode_backup_root = os.path.join(fulldir1, "Notes Mode")
+		os.makedirs(self.local_mode_backup_root, exist_ok=True)
+		os.makedirs(self.notes_mode_backup_root, exist_ok=True)
+		self.apply_backup_limit_now(load_mode_backup_limit())
 
 		self._current_font_size = self._read_font_size()
 		self._current_font_family = self._resolve_font_family()
@@ -3334,6 +3706,7 @@ class window3(QWidget):  # 主窗口
 		self.bottom.setFixedWidth(1235)
 		self.bottom.setAcceptRichText(False)
 		self.bottom.textChanged.connect(self.text_change)
+		self.bottom.textChanged.connect(self._update_word_count_label)
 		self.scrollbar = self.bottom.verticalScrollBar()
 		self.scrollbar.valueChanged.connect(self.scrollchanged)
 		self.bottom.cursorPositionChanged.connect(self.cursorchanged)
@@ -3494,9 +3867,9 @@ The window will float at top all the time as you focus on typing. If you want to
 		self.btn_00.clicked.connect(self.pin_a_tab)
 		self.btn_00.setFixedHeight(10)
 		self.btn_00.setFixedWidth(1200-74-24)
-		self.btn_00.setStyleSheet('''
+		self.btn_00.setStyleSheet(f'''
 				border: 1px outset grey;
-				background-color: #0085FF;
+				background-color: {get_accent_color_hex()};
 				border-radius: 4px;
 				padding: 1px;
 				color: #FFFFFF''')
@@ -3511,6 +3884,19 @@ The window will float at top all the time as you focus on typing. If you want to
 		self.btn0_1.setFixedSize(38, 38)
 		self.btn0_1.move(158, SCREEN_HEIGHT - 70)
 
+		self.word_count_label = QLabel('', self)
+		self.word_count_label.setStyleSheet('''
+			QLabel {
+				color: #FFFFFF;
+				background-color: transparent;
+				font-size: 12px;
+				font-weight: 500;
+			}
+		''')
+		self.word_count_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+		self.word_count_label.hide()
+		self._position_word_count_label()
+
 		self.btn0_2 = GlassButton(
 			'', radius=19,
 			icon_path='/Applications/Watermelon.app/Contents/Resources/repeat.png',
@@ -3519,6 +3905,17 @@ The window will float at top all the time as you focus on typing. If you want to
 		)
 		self.btn0_2.setFixedSize(38, 38)
 		self.btn0_2.move(1324, SCREEN_HEIGHT - 70)
+
+		self.btn0_sound = GlassButton(
+			'', radius=19,
+			icon_path='/Applications/Watermelon.app/Contents/Resources/speaker.png',
+			momentary=True,
+			parent=self
+		)
+		self.btn0_sound.setFixedSize(38, 38)
+		self.btn0_sound.move(1383, SCREEN_HEIGHT - 200)
+		self.btn0_sound.clicked.connect(self.toggle_sound_mode)
+		self._start_sound_monitor()
 
 		self._apply_mode_visibility()
 
@@ -3535,11 +3932,7 @@ The window will float at top all the time as you focus on typing. If you want to
 			currentindex = int(codecs.open(fulldir4, 'r', encoding='utf-8').read())
 			self.widget0.setCurrentIndex(currentindex)
 		self.bottom.setText(previewtext)
-		endhtml = self.md2html(previewtext)
-		self.topleft.setHtml(endhtml)
-		endbio = self.addb2(previewtext.replace('*', ''))
-		endhtmlbio = self.md2html(endbio)
-		self.topright.setHtml(endhtmlbio)
+		self._request_async_preview_render(previewtext, debounce_ms=0)
 		self.widget0.currentIndexChanged.connect(self.index_change)
 
 		w2.setStyleSheet(style_sheet_dark if is_dark_theme(app) else style_sheet_ori)
@@ -3556,7 +3949,9 @@ The window will float at top all the time as you focus on typing. If you want to
 		self.qw1.raise_()
 		self.btn_00.raise_()
 		self.btn0_1.raise_()
+		self.word_count_label.raise_()
 		self.btn0_2.raise_()
+		self.btn0_sound.raise_()
 
 		# 启动内部组件动画（延迟一小段时间让窗口先开始滑入）
 		QTimer.singleShot(200, self._start_intro_animation)
@@ -3567,12 +3962,10 @@ The window will float at top all the time as you focus on typing. If you want to
 		# if w2.lbl2.text() != 'No Intrenet' and 'ready' in w2.lbl2.text():
 		# 	w2.show()
 
-		# 启动自动更新线程（24h = 86400秒）
-		self.update_check_worker = UpdateCheckWorker(current_version='v' + VERSION, interval_seconds=86400)
-		self.update_check_worker.update_available.connect(self.on_update_available)  # 主线程槽
-		self.update_check_worker.checked_ok.connect(self.on_update_checked_ok)  # 可选：日志或无感刷新
-		self.update_check_worker.checked_error.connect(self.on_update_checked_error)  # 可选：日志
-		self.update_check_worker.start()
+		# 启动后稍等再开始自动更新检查，避免启动期焦点/模态竞争
+		self.set_update_alert_dedupe_enabled(self.update_alert_dedupe_enabled)
+		QTimer.singleShot(1800, self._start_auto_update_check_after_startup)
+		self._start_mode_autobackup()
 
 	def showEvent(self, event):
 		super().showEvent(event)
@@ -3701,6 +4094,76 @@ The window will float at top all the time as you focus on typing. If you want to
 		# self.btn0_2.move(1435, screen_height - 182)
 		self.btn0_1.move(158, screen_height - 70)
 		self.btn0_2.move(1324, screen_height - 70)
+		self.btn0_sound.move(1383, screen_height - 200)
+		self._position_word_count_label()
+
+	def _count_visible_chars(self, text):
+		if not text:
+			return 0
+		normalized = text.replace('\u2029', '\n')
+		return len(normalized)
+
+	def _count_words(self, text):
+		if not text:
+			return 0
+		normalized = text.replace('\u2029', '\n')
+		# Count each Chinese character as one word-like token.
+		cjk_count = len(re.findall(r'[\u4e00-\u9fff]', normalized))
+		latin_words = len(re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", normalized))
+		number_words = len(re.findall(r"\d+(?:[.,]\d+)?", normalized))
+		return cjk_count + latin_words + number_words
+
+	def _position_word_count_label(self):
+		if not hasattr(self, "word_count_label") or not hasattr(self, "btn0_1"):
+			return
+		x = self.btn0_1.x() - 10
+		SCREEN_HEIGHT = int(self.screen().availableGeometry().height())
+		# y = self.btn0_1.y() + max(0, (self.btn0_1.height() - self.word_count_label.height()) // 2)
+		self.word_count_label.move(x, SCREEN_HEIGHT - 112)
+
+	def _has_active_document_for_word_count(self):
+		if self.notes_mode_enabled:
+			if not getattr(self, "notes_active", False):
+				return False
+			if not getattr(self, "notes_current_title", None):
+				return False
+			if hasattr(self, "widget_notes") and self.widget_notes.currentIndex() < 0:
+				return False
+			return True
+		if not hasattr(self, "widget0"):
+			return False
+		if self.widget0.count() <= 0 or self.widget0.currentIndex() < 0:
+			return False
+		return True
+
+	def _update_word_count_label(self):
+		if not hasattr(self, "bottom") or not hasattr(self, "word_count_label"):
+			return
+		if not self._has_active_document_for_word_count():
+			self.word_count_label.hide()
+			return
+		full_text = self.bottom.toPlainText()
+		total_chars = self._count_visible_chars(full_text)
+		if total_chars <= 0:
+			self.word_count_label.hide()
+			return
+		total_words = self._count_words(full_text)
+		selected_text = self.bottom.textCursor().selectedText().replace('\u2029', '\n')
+		selected_chars = self._count_visible_chars(selected_text)
+		if selected_chars > 0:
+			selected_words = self._count_words(selected_text)
+			self.word_count_label.setText(
+				f"Selected: {selected_chars} chars, {selected_words} words | "
+				f"Total: {total_chars} chars, {total_words} words"
+			)
+		else:
+			self.word_count_label.setText(f"Total: {total_chars} chars, {total_words} words")
+		self.word_count_label.adjustSize()
+		self._position_word_count_label()
+		if self.btn0_1.isVisible():
+			self.word_count_label.show()
+		else:
+			self.word_count_label.hide()
 
 	def _default_splitter2_ratio(self, screen_height):
 		total = max(screen_height - 100, 1)
@@ -3798,13 +4261,7 @@ The window will float at top all the time as you focus on typing. If you want to
 		# 重新渲染 topleft 和 topright 的 HTML 内容以应用新的背景颜色
 		try:
 			previewtext = self.bottom.toPlainText()
-			if self.topleftshow == 1:
-				endhtml = self.md2html(previewtext)
-				self.topleft.setHtml(endhtml)
-			if self.toprightshow == 1:
-				endbio = self.addb2(previewtext.replace('*', ''))
-				endhtmlbio = self.md2html(endbio)
-				self.topright.setHtml(endhtmlbio)
+			self._request_async_preview_render(previewtext, debounce_ms=0)
 		except Exception:
 			pass
 
@@ -3839,6 +4296,8 @@ The window will float at top all the time as you focus on typing. If you want to
 		self.btn_00.setVisible(False)
 		self.btn0_1.setVisible(False)
 		self.btn0_2.setVisible(False)
+		self.btn0_sound.setVisible(False)
+		self.word_count_label.setVisible(False)
 
 		# 创建 qw0 从上到下的动画
 		self._anim_qw0 = QPropertyAnimation(self.qw0, b"pos", self)
@@ -3866,7 +4325,7 @@ The window will float at top all the time as you focus on typing. If you want to
 		# 为每个需要淡入的组件创建透明度效果
 		self._opacity_effects = []
 		self._fade_animations = []
-		fade_widgets = [self.qw1, self.btn_00, self.btn0_1, self.btn0_2]
+		fade_widgets = [self.qw1, self.btn_00, self.btn0_1, self.btn0_2, self.btn0_sound, self.word_count_label]
 
 		self._fade_group = QParallelAnimationGroup(self)
 
@@ -3893,11 +4352,12 @@ The window will float at top all the time as you focus on typing. If you want to
 	def _on_intro_animation_finished(self):
 		"""启动动画完成后的清理工作"""
 		# 移除透明度效果，恢复正常渲染
-		for widget in [self.qw1, self.btn_00, self.btn0_1, self.btn0_2]:
+		for widget in [self.qw1, self.btn_00, self.btn0_1, self.btn0_2, self.btn0_sound, self.word_count_label]:
 			widget.setGraphicsEffect(None)
 		# 清理动画对象引用
 		self._opacity_effects = []
 		self._fade_animations = []
+		self._update_word_count_label()
 
 	def _start_pin_show_animation(self, screen_height):
 		"""pin_a_tab 显示时的动画：btn_00 下落到屏幕外，然后是标准启动动画"""
@@ -3921,6 +4381,8 @@ The window will float at top all the time as you focus on typing. If you want to
 		self.l1.setVisible(False)
 		self.btn0_1.setVisible(False)
 		self.btn0_2.setVisible(False)
+		self.btn0_sound.setVisible(False)
+		self.word_count_label.setVisible(False)
 
 		# 保存目标值供动画使用
 		self._btn_00_target_x = btn_00_target_x
@@ -3978,6 +4440,8 @@ The window will float at top all the time as you focus on typing. If you want to
 		self.btn_00.setVisible(False)
 		self.btn0_1.setVisible(False)
 		self.btn0_2.setVisible(False)
+		self.btn0_sound.setVisible(False)
+		self.word_count_label.setVisible(False)
 
 		# 创建 qw0 从上到下的动画
 		self._anim_qw0 = QPropertyAnimation(self.qw0, b"pos", self)
@@ -4030,7 +4494,7 @@ The window will float at top all the time as you focus on typing. If you want to
 		# 3. 按钮组件淡出（包括 btn_00）
 		self._hide_opacity_effects = []
 		self._hide_fade_animations = []
-		fade_widgets = [self.qw1, self.btn0_1, self.btn0_2, self.btn_00]
+		fade_widgets = [self.qw1, self.btn0_1, self.btn0_2, self.btn0_sound, self.btn_00, self.word_count_label]
 
 		for widget in fade_widgets:
 			opacity_effect = QGraphicsOpacityEffect(widget)
@@ -4052,7 +4516,7 @@ The window will float at top all the time as you focus on typing. If you want to
 	def _on_pin_hide_animation_finished(self):
 		"""隐藏动画完成后的清理和回调"""
 		# 移除透明度效果（包括 btn_00）
-		for widget in [self.qw1, self.btn0_1, self.btn0_2, self.btn_00]:
+		for widget in [self.qw1, self.btn0_1, self.btn0_2, self.btn0_sound, self.btn_00, self.word_count_label]:
 			widget.setGraphicsEffect(None)
 
 		# 隐藏组件
@@ -4061,6 +4525,8 @@ The window will float at top all the time as you focus on typing. If you want to
 		self.l1.setVisible(False)
 		self.btn_00.setVisible(False)
 		self.btn0_1.setVisible(False)
+		self.btn0_sound.setVisible(False)
+		self.word_count_label.setVisible(False)
 
 		# 清理
 		self._hide_opacity_effects = []
@@ -4116,9 +4582,10 @@ The window will float at top all the time as you focus on typing. If you want to
 			# 先设置窗口透明度为0，防止闪现
 			self.setWindowOpacity(0)
 			# 设置 btn_00 的样式（动画会处理位置和尺寸）
-			self.btn_00.setStyleSheet('''
+			accent = get_accent_color_hex()
+			self.btn_00.setStyleSheet(f'''
 						border: 1px outset grey;
-						background-color: #0085FF;
+						background-color: {accent};
 						border-radius: 4px;
 						padding: 1px;
 						color: #FFFFFF''')
@@ -4139,6 +4606,8 @@ The window will float at top all the time as you focus on typing. If you want to
 			self.btn_00.setVisible(False)
 			self.btn0_1.setVisible(False)
 			self.btn0_2.setVisible(False)
+			self.btn0_sound.setVisible(False)
+			self.word_count_label.setVisible(False)
 			self.updatecontent_for_mode()
 			# 用 QTimer 延迟恢复透明度，确保隐藏操作已生效
 			def restore_and_animate():
@@ -4188,9 +4657,91 @@ The window will float at top all the time as you focus on typing. If you want to
 		self.qw1.raise_()
 		self.btn_00.raise_()
 		self.btn0_1.raise_()
+		self.word_count_label.raise_()
 		self.btn0_2.raise_()
+		self.btn0_sound.raise_()
+
+	def toggle_sound_mode(self):
+		self.sound_mode_enabled = not self.sound_mode_enabled
+		if self.sound_mode_enabled:
+			self._show_mode_toast("Sound ON")
+		else:
+			self._show_mode_toast("Sound OFF")
+
+	def _start_sound_monitor(self):
+		"""使用 NSEvent local monitor 监听键盘，兼容所有输入法"""
+		self._sound_monitor = None
+		self._sound_key_handler = None
+		try:
+			from AppKit import NSEvent
+		except ImportError:
+			return
+
+		NSEventMaskKeyDown = 1 << 10
+		NSCommandKeyMask = 1 << 20
+		NSControlKeyMask = 1 << 18
+		w3_ref = self
+
+		def key_handler(ns_event):
+			try:
+				if not w3_ref.sound_mode_enabled or not w3_ref.bottom.hasFocus():
+					return ns_event
+				flags = ns_event.modifierFlags()
+				if flags & (NSCommandKeyMask | NSControlKeyMask):
+					return ns_event
+				key_code = ns_event.keyCode()
+				if key_code == 51 or key_code == 117:  # backspace / forward delete
+					play_sound_async(BasePath + 'delete.wav')
+					w3_ref._sound_bell_played = False
+				elif key_code == 36 or key_code == 76:  # return / numpad enter
+					play_sound_async(BasePath + 'return.wav')
+					w3_ref._sound_bell_played = False
+				else:
+					chars = ns_event.charactersIgnoringModifiers()
+					if chars and len(chars) > 0 and ord(chars[0]) >= 32 and ord(chars[0]) < 0xF700:
+						cursor_rect = w3_ref.bottom.cursorRect()
+						viewport_width = w3_ref.bottom.viewport().width()
+						char_width = w3_ref.bottom.fontMetrics().averageCharWidth()
+						remaining = (viewport_width - cursor_rect.right()) / max(char_width, 1)
+						if remaining <= 10:
+							if not w3_ref._sound_bell_played:
+								play_sound_async(BasePath + 'bell.mp3')
+								w3_ref._sound_bell_played = True
+							else:
+								play_sound_async(BasePath + 'normal.wav')
+						else:
+							w3_ref._sound_bell_played = False
+							play_sound_async(BasePath + 'normal.wav')
+			except Exception:
+				pass
+			return ns_event
+
+		self._sound_key_handler = key_handler
+		self._sound_monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+			NSEventMaskKeyDown, key_handler
+		)
+
+	def _stop_sound_monitor(self):
+		if self._sound_monitor:
+			try:
+				from AppKit import NSEvent
+				NSEvent.removeMonitor_(self._sound_monitor)
+			except Exception:
+				pass
+			self._sound_monitor = None
+			self._sound_key_handler = None
 
 	def closeEvent(self, event):
+		self._stop_mode_autobackup()
+		self._stop_update_check_worker()
+		if self._update_notice_box is not None:
+			try:
+				self._update_notice_box.close()
+			except Exception:
+				pass
+			self._update_notice_box = None
+		self._stop_preview_rendering()
+		self._stop_sound_monitor()
 		self._stop_notes_wait()
 		if self.notes_cache_worker:
 			self.notes_cache_worker.stop()
@@ -4241,6 +4792,168 @@ The window will float at top all the time as you focus on typing. If you want to
 		self._set_notes_active(False)
 		self.updatecontent()
 
+	def _start_mode_autobackup(self):
+		if self.mode_backup_timer:
+			self.mode_backup_timer.stop()
+		self.mode_backup_timer = QTimer(self)
+		self.mode_backup_timer.setInterval(60 * 1000)
+		self.mode_backup_timer.timeout.connect(self._trigger_mode_autobackup)
+		self.mode_backup_timer.start()
+
+	def _stop_mode_autobackup(self):
+		if self.mode_backup_timer:
+			self.mode_backup_timer.stop()
+			self.mode_backup_timer.deleteLater()
+			self.mode_backup_timer = None
+
+	def _trigger_mode_autobackup(self):
+		if not self.notes_mode_enabled:
+			self._trigger_local_mode_backup()
+
+	def _current_local_file_path(self):
+		home_dir = str(Path.home())
+		app_dir = os.path.join(home_dir, "WatermelonAppPath")
+		feed_file = os.path.join(app_dir, "DoNotDelete.txt")
+		current_file = os.path.join(app_dir, "Current.txt")
+		if not os.path.exists(feed_file) or not os.path.exists(current_file):
+			return None
+		try:
+			paths = codecs.open(feed_file, 'r', encoding='utf-8').read()
+			paths_list = [line for line in paths.split('\n') if line.strip()]
+			if not paths_list:
+				return None
+			current_index = int(codecs.open(current_file, 'r', encoding='utf-8').read().strip() or "0")
+			if current_index < 0 or current_index >= len(paths_list):
+				return None
+			parts = paths_list[current_index].split("||", 1)
+			if len(parts) != 2:
+				return None
+			return parts[1]
+		except Exception:
+			return None
+
+	def _backup_target_dir(self, backup_root, label, identity):
+		safe_label = re.sub(r'[\\\\/:*?"<>|]', '_', (label or "").strip())
+		if safe_label == "":
+			safe_label = "Untitled"
+		digest = hashlib.sha1(identity.encode('utf-8')).hexdigest()[:8]
+		target_dir = os.path.join(backup_root, f"{safe_label}_{digest}")
+		os.makedirs(target_dir, exist_ok=True)
+		return target_dir
+
+	def open_current_backup_folder(self):
+		target_dir = ""
+		if self.notes_mode_enabled:
+			note_key = self._current_notes_key()
+			title = self.notes_current_title or (self.widget_notes.currentText().strip() if hasattr(self, "widget_notes") else "") or "Untitled"
+			if note_key:
+				target_dir = self._backup_target_dir(self.notes_mode_backup_root, title, note_key)
+			else:
+				target_dir = self.notes_mode_backup_root
+		else:
+			source_path = self._current_local_file_path()
+			if source_path:
+				label = Path(source_path).stem
+				target_dir = self._backup_target_dir(self.local_mode_backup_root, label, source_path)
+			else:
+				target_dir = self.local_mode_backup_root
+		try:
+			os.makedirs(target_dir, exist_ok=True)
+			subprocess.call(['open', target_dir])
+		except Exception:
+			pass
+
+	def _perform_mode_backup(self, target_dir, content):
+		with self._mode_backup_lock:
+			timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+			backup_path = os.path.join(target_dir, f"{timestamp}.md")
+			try:
+				with open(backup_path, 'w', encoding='utf-8') as fp:
+					fp.write(content)
+			except Exception:
+				return
+			self._enforce_mode_backup_limit(target_dir, load_mode_backup_limit())
+
+	def _enforce_mode_backup_limit(self, target_dir, limit):
+		if limit <= 0:
+			return
+		try:
+			md_files = [
+				os.path.join(target_dir, f)
+				for f in os.listdir(target_dir)
+				if f.endswith('.md')
+			]
+		except Exception:
+			return
+		if len(md_files) <= limit:
+			return
+		md_files.sort(key=os.path.getmtime)
+		for old_file in md_files[:-limit]:
+			try:
+				os.remove(old_file)
+			except Exception:
+				continue
+
+	def apply_backup_limit_now(self, limit=None):
+		if limit is None:
+			limit = load_mode_backup_limit()
+		roots = [self.local_mode_backup_root, self.notes_mode_backup_root]
+		for root in roots:
+			if not root or not os.path.isdir(root):
+				continue
+			try:
+				names = os.listdir(root)
+			except Exception:
+				continue
+			for name in names:
+				sub_dir = os.path.join(root, name)
+				if os.path.isdir(sub_dir):
+					self._enforce_mode_backup_limit(sub_dir, limit)
+
+	def _trigger_local_mode_backup(self):
+		source_path = self._current_local_file_path()
+		if not source_path or not os.path.exists(source_path):
+			return
+		try:
+			current_meta = (os.path.getmtime(source_path), os.path.getsize(source_path))
+		except Exception:
+			return
+		prev_meta = self._last_local_backup_meta.get(source_path)
+		if prev_meta is None:
+			self._last_local_backup_meta[source_path] = current_meta
+			return
+		if prev_meta == current_meta:
+			return
+		self._last_local_backup_meta[source_path] = current_meta
+		try:
+			with open(source_path, 'r', encoding='utf-8') as fp:
+				content = fp.read()
+		except Exception:
+			return
+		label = Path(source_path).stem
+		target_dir = self._backup_target_dir(self.local_mode_backup_root, label, source_path)
+		threading.Thread(
+			target=self._perform_mode_backup,
+			args=(target_dir, content),
+			daemon=True
+		).start()
+
+	def _backup_notes_mode_if_changed(self, note_key, title, note_md):
+		if not note_key:
+			return
+		current_hash = hashlib.sha1(note_md.encode('utf-8')).hexdigest()
+		prev_hash = self._last_notes_backup_hash.get(note_key)
+		if prev_hash == current_hash:
+			return
+		self._last_notes_backup_hash[note_key] = current_hash
+		title = title or "Untitled"
+		target_dir = self._backup_target_dir(self.notes_mode_backup_root, title, note_key)
+		threading.Thread(
+			target=self._perform_mode_backup,
+			args=(target_dir, note_md),
+			daemon=True
+		).start()
+
 	def _show_custom_message_box(self, title, text, buttons, default=0):
 		box = CustomMessageBox(
 			text=text,
@@ -4253,12 +4966,17 @@ The window will float at top all the time as you focus on typing. If you want to
 		return result if result is not None else -1
 
 	def _confirm_notes_save(self):
-		result = self._show_custom_message_box(
-			title="Unsaved Notes",
+		box = CustomMessageBox(
 			text="Save changes to this note?",
+			parent=self,
 			buttons=("Save", "Discard", "Cancel"),
 			default=0,
 		)
+		box.setWindowTitle("Unsaved Notes")
+		for btn in box.btns:
+			btn.setFixedWidth(100)
+		result = box.exec()
+		result = result if result is not None else -1
 		if result == 0:
 			return "save"
 		if result == 1:
@@ -4372,13 +5090,72 @@ The window will float at top all the time as you focus on typing. If you want to
 		cursor = self.bottom.textCursor()  # 设置游标
 		cursor.setPosition(pos)  # 游标位置设置为尾部
 		self.bottom.setTextCursor(cursor)  # 滚动到游标位置
-		if self.topleftshow == 1:
-			endhtml = self.md2html(previewtext)
-			self.topleft.setHtml(endhtml)
-		if self.toprightshow == 1:
-			endbio = self.addb2(previewtext.replace('*', ''))
-			endhtmlbio = self.md2html(endbio)
-			self.topright.setHtml(endhtmlbio)
+		self._request_async_preview_render(previewtext, debounce_ms=0)
+
+	def _request_async_preview_render(self, markdown_text, debounce_ms=90):
+		self._update_word_count_label()
+		self._preview_render_request_token += 1
+		self._preview_render_pending_text = markdown_text
+		self._preview_render_pending_token = self._preview_render_request_token
+		if debounce_ms <= 0:
+			self._preview_render_timer.stop()
+			self._start_preview_render_worker()
+			return
+		self._preview_render_timer.start(debounce_ms)
+
+	def _start_preview_render_worker(self):
+		if self._preview_render_worker and self._preview_render_worker.isRunning():
+			return
+		if self._preview_render_pending_text is None:
+			return
+		markdown_text = self._preview_render_pending_text
+		request_id = self._preview_render_pending_token
+		self._preview_render_pending_text = None
+		render_left = self.topleftshow == 1
+		render_right = self.toprightshow == 1
+		if not render_left and not render_right:
+			return
+		worker = PreviewRenderWorker(
+			request_id=request_id,
+			markdown_text=markdown_text,
+			render_left=render_left,
+			render_right=render_right,
+			parent=self,
+		)
+		worker.rendered.connect(self._on_preview_rendered)
+		worker.failed.connect(self._on_preview_render_failed)
+		worker.finished.connect(self._on_preview_worker_finished)
+		worker.finished.connect(worker.deleteLater)
+		self._preview_render_worker = worker
+		worker.start()
+
+	def _on_preview_rendered(self, request_id, left_markdown_html, right_markdown_html):
+		if request_id != self._preview_render_request_token:
+			return
+		if self.topleftshow == 1 and left_markdown_html is not None:
+			self.topleft.setHtml(self.md2html("", pre_rendered_html=left_markdown_html))
+		if self.toprightshow == 1 and right_markdown_html is not None:
+			self.topright.setHtml(self.md2html("", pre_rendered_html=right_markdown_html))
+
+	def _on_preview_render_failed(self, request_id, _error_message):
+		if request_id != self._preview_render_request_token:
+			return
+		# Keep UI responsive even when a render task fails.
+		return
+
+	def _on_preview_worker_finished(self):
+		self._preview_render_worker = None
+		if self._preview_render_pending_text is not None:
+			QTimer.singleShot(0, self._start_preview_render_worker)
+
+	def _stop_preview_rendering(self):
+		self._preview_render_timer.stop()
+		self._preview_render_pending_text = None
+		worker = self._preview_render_worker
+		if worker and worker.isRunning():
+			worker.requestInterruption()
+			worker.wait(500)
+		self._preview_render_worker = None
 
 	def _read_font_size(self, default=14):
 		try:
@@ -4416,16 +5193,12 @@ QListWidget{{
 		if app is not None:
 			base_style = style_sheet_dark if is_dark_theme(app) else style_sheet_ori
 			app.setStyleSheet(base_style + "\n" + font_override)
-		if hasattr(self, "bottom") and hasattr(self, "topleft") and hasattr(self, "topright"):
-			try:
-				previewtext = self.bottom.toPlainText()
-				if self.topleftshow == 1:
-					self.topleft.setHtml(self.md2html(previewtext))
-				if self.toprightshow == 1:
-					endbio = self.addb2(previewtext.replace('*', ''))
-					self.topright.setHtml(self.md2html(endbio))
-			except Exception:
-				pass
+			if hasattr(self, "bottom") and hasattr(self, "topleft") and hasattr(self, "topright"):
+				try:
+					previewtext = self.bottom.toPlainText()
+					self._request_async_preview_render(previewtext, debounce_ms=0)
+				except Exception:
+					pass
 		# 重新应用用户选择的背景颜色
 		if hasattr(self, "_current_bg_color") and hasattr(self, "topleft"):
 			self.set_bg_color(self._current_bg_color)
@@ -4459,26 +5232,14 @@ QListWidget{{
 		if self.notes_active:
 			self._set_notes_dirty(True)
 			previewtext = self.bottom.toPlainText()
-			if self.topleftshow == 1:
-				endhtml = self.md2html(previewtext)
-				self.topleft.setHtml(endhtml)
-			if self.toprightshow == 1:
-				endbio = self.addb2(previewtext.replace('*', ''))
-				endhtmlbio = self.md2html(endbio)
-				self.topright.setHtml(endhtmlbio)
+			self._request_async_preview_render(previewtext, debounce_ms=90)
 			QTimer.singleShot(100, self.scrollchanged)
 			return
 		# 如果处于 Notes 模式但 notes_active 为 False，不要保存到普通模式文件
 		if self.notes_mode_enabled:
 			# 只更新预览，不保存文件
 			previewtext = self.bottom.toPlainText()
-			if self.topleftshow == 1:
-				endhtml = self.md2html(previewtext)
-				self.topleft.setHtml(endhtml)
-			if self.toprightshow == 1:
-				endbio = self.addb2(previewtext.replace('*', ''))
-				endhtmlbio = self.md2html(endbio)
-				self.topright.setHtml(endhtmlbio)
+			self._request_async_preview_render(previewtext, debounce_ms=90)
 			QTimer.singleShot(100, self.scrollchanged)
 			return
 		if self.bottom.toPlainText() != '':
@@ -4530,15 +5291,7 @@ QListWidget{{
 				with open(targetpath, 'w', encoding='utf-8') as f0:
 					f0.write(self.bottom.toPlainText())
 			previewtext = codecs.open(targetpath, 'r', encoding='utf-8').read()
-			# set top left
-			if self.topleftshow == 1:
-				endhtml = self.md2html(previewtext)
-				self.topleft.setHtml(endhtml)
-			# set top right
-			if self.toprightshow == 1:
-				endbio = self.addb2(previewtext.replace('*', ''))
-				endhtmlbio = self.md2html(endbio)
-				self.topright.setHtml(endhtmlbio)
+			self._request_async_preview_render(previewtext, debounce_ms=90)
 			# set position
 			QTimer.singleShot(100, self.scrollchanged)
 
@@ -4581,6 +5334,7 @@ QListWidget{{
 		self.bottom.ensureCursorVisible()  # 游标可用
 		cursor = self.bottom.textCursor()  # 设置游标
 		position = cursor.position()
+		self._update_word_count_label()
 		if self.notes_mode_enabled and self.notes_active:
 			note_key = self._current_notes_key()
 			if note_key:
@@ -4664,13 +5418,7 @@ QListWidget{{
 			pos = len(self.bottom.toPlainText())  # 获取文本尾部的位置
 			cursor.setPosition(pos)  # 游标位置设置为尾部
 			self.bottom.setTextCursor(cursor)  # 滚动到游标位置
-			# set left
-			endhtml = self.md2html(text_open)
-			self.topleft.setHtml(endhtml)
-			# set right
-			endbio = self.addb2(text_open.replace('*', ''))
-			endhtmlbio = self.md2html(endbio)
-			self.topright.setHtml(endhtmlbio)
+			self._request_async_preview_render(text_open, debounce_ms=0)
 
 	def new_file(self):
 		self.bottom.clear()
@@ -4738,11 +5486,7 @@ QListWidget{{
 			currentindex = int(codecs.open(fulldir4, 'r', encoding='utf-8').read())
 			self.widget0.setCurrentIndex(currentindex)
 		self.bottom.setText(previewtext)
-		endhtml = self.md2html(previewtext)
-		self.topleft.setHtml(endhtml)
-		endbio = self.addb2(previewtext.replace('*', ''))
-		endhtmlbio = self.md2html(endbio)
-		self.topright.setHtml(endhtmlbio)
+		self._request_async_preview_render(previewtext, debounce_ms=0)
 
 	def _set_notes_dirty(self, dirty):
 		self.notes_dirty = bool(dirty)
@@ -4792,6 +5536,7 @@ QListWidget{{
 			self.bottom.setReadOnly(not self.notes_active)
 		if not self.notes_active:
 			self._set_notes_dirty(False)
+		self._update_word_count_label()
 
 	def _set_notes_new_enabled(self, enabled):
 		self.btn_notes_new.setEnabled(bool(enabled))
@@ -4896,6 +5641,7 @@ QListWidget{{
 				widget.setVisible(True)
 		self.qw1.setUpdatesEnabled(True)
 		self.qw1.updateGeometry()
+		self._update_word_count_label()
 
 	def _apply_notes_folder(self, folder, note_title=None):
 		self.notes_current_folder = folder
@@ -5086,10 +5832,63 @@ QListWidget{{
 			self.bottom.setReadOnly(False)
 		self._apply_mode_visibility()
 		self.updatecontent_for_mode()
+		self._update_word_count_label()
 		QTimer.singleShot(50, lambda: self._log_layout_state("toggle_after"))
 		# 显示模式切换提示
 		mode_name = "Notes Mode" if self.notes_mode_enabled else "Local Mode"
 		self._show_mode_toast(mode_name)
+
+	def toggle_teleprompter(self):
+		self._teleprompter_mode = not self._teleprompter_mode
+		teleprompter_action.setChecked(self._teleprompter_mode)
+		if self._teleprompter_mode:
+			# 保存当前状态
+			self._saved_tp_splitter1_sizes = self.splitter1.sizes()
+			self._saved_tp_splitter2_sizes = self.splitter2.sizes()
+
+			# 固定宽度容器：物理限制 splitter1 的可用空间为 250px
+			# （不依赖 splitter1 的 max/minWidth，避免 QWebEngineView 原生视图撑开）
+			self._tp_container = QWidget()
+			self._tp_container.setFixedWidth(350)
+			container_layout = QVBoxLayout(self._tp_container)
+			container_layout.setContentsMargins(0, 0, 0, 0)
+			container_layout.addWidget(self.splitter1)
+
+			# 居中外层：stretch(1) + container + stretch(1)
+			self._tp_wrapper = QWidget()
+			wrapper_layout = QHBoxLayout(self._tp_wrapper)
+			wrapper_layout.setContentsMargins(0, 0, 0, 0)
+			wrapper_layout.addStretch(1)
+			wrapper_layout.addWidget(self._tp_container)
+			wrapper_layout.addStretch(1)
+
+			# 插入 splitter2 第一个位置
+			self.splitter2.insertWidget(0, self._tp_wrapper)
+
+			# 高度自动跳转为 100（可通过拖拽 splitter2 手柄调整）
+			total = sum(self.splitter2.sizes())
+			self.splitter2.setSizes([100, max(total - 100, 50)])
+
+			self._show_mode_toast("Teleprompter")
+			# 重新渲染内容，应用加大的行距
+			self.text_change()
+		else:
+			# 将 splitter1 从 container 取出，放回 splitter2 第一个位置
+			self.splitter2.insertWidget(0, self.splitter1)
+
+			# 移除并删除 wrapper（container 是其子控件，会一起销毁）
+			self._tp_wrapper.setParent(None)
+			self._tp_wrapper.deleteLater()
+			self._tp_wrapper = None
+			self._tp_container = None
+
+			# 恢复 splitter 尺寸
+			self.splitter1.setSizes(self._saved_tp_splitter1_sizes)
+			self.splitter2.setSizes(self._saved_tp_splitter2_sizes)
+
+			self._show_mode_toast("Normal Mode")
+			# 重新渲染内容，恢复默认行距
+			self.text_change()
 
 	def open_notes_folder_dialog(self):
 		if self.notes_folder_dialog:
@@ -5396,6 +6195,8 @@ QListWidget{{
 			self.notes_force_reload = False
 		else:
 			note_md = notes_html_to_markdown(note_html, cache_key=note_key)
+		# Notes 模式没有本地源文件，这里记录“当前已加载内容”作为备份比对基线。
+		self._last_notes_backup_hash[note_key] = hashlib.sha1(note_md.encode('utf-8')).hexdigest()
 		self._set_notes_active(True)
 		self.notes_awaiting_reselect = False  # 成功加载笔记，重置标志
 		self.notes_current_title = title
@@ -5408,13 +6209,7 @@ QListWidget{{
 				self.topright.clear()
 				self._set_notes_dirty(False)
 				return
-		rendered_html = markdown_to_html(note_md)
-		if self.topleftshow == 1:
-			self.topleft.setHtml(self.md2html("", pre_rendered_html=rendered_html))
-		if self.toprightshow == 1:
-			bio_text = self.addb2(note_md.replace('*', ''))
-			bio_html = markdown_to_html(bio_text)
-			self.topright.setHtml(self.md2html("", pre_rendered_html=bio_html))
+		self._request_async_preview_render(note_md, debounce_ms=0)
 		self._set_notes_dirty(False)
 
 	def save_notes_sync(self):
@@ -5455,6 +6250,9 @@ QListWidget{{
 		note_key = f"{folder}/{title}"
 		delete_cache_file(note_key)
 		note["body"] = note_html
+		final_title = new_title if (new_title and new_title != title) else title
+		final_note_key = f"{folder}/{final_title}"
+		self._backup_notes_mode_if_changed(final_note_key, final_title, note_md)
 		if new_title and new_title != title:
 			note["title"] = new_title
 			self.notes_current_title = new_title
@@ -5558,14 +6356,10 @@ QListWidget{{
 		self.widget0.setCurrentIndex(0)
 		with open(fulldir4, 'w', encoding='utf-8') as f0:
 			f0.write('0')
-		targetpath = pathslist[0].split('||')[1]
-		previewtext = codecs.open(targetpath, 'r', encoding='utf-8').read()
-		self.bottom.setText(previewtext)
-		endhtml = self.md2html(previewtext)
-		self.topleft.setHtml(endhtml)
-		endbio = self.addb2(previewtext.replace('*', ''))
-		endhtmlbio = self.md2html(endbio)
-		self.topright.setHtml(endhtmlbio)
+			targetpath = pathslist[0].split('||')[1]
+			previewtext = codecs.open(targetpath, 'r', encoding='utf-8').read()
+			self.bottom.setText(previewtext)
+			self._request_async_preview_render(previewtext, debounce_ms=0)
 
 		w3.widget0.currentIndexChanged.connect(w3.index_change)
 		w3.bottom.textChanged.connect(w3.text_change)
@@ -6174,21 +6968,107 @@ QListWidget{{
 		</body>
 		</html>
 		""" % (font_size, font_family, bg_color, text_color, text_color, middlehtml)
+		if getattr(self, '_teleprompter_mode', False):
+			html_content = html_content.replace(
+				'</head>',
+				'<style>body { line-height: 2.0 !important; }</style>\n</head>'
+			)
 		return html_content
+
+	def _start_update_check_worker(self):
+		if self.update_check_worker is not None and self.update_check_worker.isRunning():
+			return
+		self.update_check_worker = UpdateCheckWorker(
+			current_version='v' + VERSION,
+			interval_seconds=86400,
+			parent=self
+		)
+		self.update_check_worker.update_available.connect(self.on_update_available)
+		self.update_check_worker.checked_ok.connect(self.on_update_checked_ok)
+		self.update_check_worker.checked_error.connect(self.on_update_checked_error)
+		self.update_check_worker.start()
+
+	def _stop_update_check_worker(self):
+		worker = self.update_check_worker
+		if worker is None:
+			return
+		if worker.isRunning():
+			worker.stop()
+			worker.wait(3000)
+		try:
+			worker.deleteLater()
+		except Exception:
+			pass
+		self.update_check_worker = None
+
+	def set_auto_update_check_enabled(self, enabled):
+		enabled = bool(enabled)
+		self.auto_update_check_enabled = enabled
+		save_auto_update_check_enabled(enabled)
+		if 'auto_update_check_action' in globals():
+			try:
+				auto_update_check_action.blockSignals(True)
+				auto_update_check_action.setChecked(enabled)
+				auto_update_check_action.blockSignals(False)
+			except Exception:
+				pass
+		if enabled:
+			self._start_update_check_worker()
+		else:
+			self._stop_update_check_worker()
+
+	def _start_auto_update_check_after_startup(self):
+		if not self.auto_update_check_enabled:
+			return
+		self._start_update_check_worker()
+
+	def set_update_alert_dedupe_enabled(self, enabled):
+		enabled = bool(enabled)
+		self.update_alert_dedupe_enabled = enabled
+		save_update_alert_dedupe_enabled(enabled)
+		if not enabled:
+			self._last_notified_update_version = None
+		if 'update_alert_dedupe_action' in globals():
+			try:
+				update_alert_dedupe_action.blockSignals(True)
+				update_alert_dedupe_action.setChecked(enabled)
+				update_alert_dedupe_action.blockSignals(False)
+			except Exception:
+				pass
 	
 	@pyqtSlot(str)
 	def on_update_available(self, latest: str):
-		# 这里只在主线程里创建窗口或弹窗
-		# 你可以复用已有的 WindowUpdate 或者弹一个你的自定义对话框
-		# 例：用你已有的 RestartMessageBox/CustomMessageBox 风格
+		if not latest:
+			return
+		if self._update_notice_box is not None:
+			try:
+				if self._update_notice_box.isVisible():
+					self._update_notice_box.raise_()
+					self._update_notice_box.activateWindow()
+					return
+				self._update_notice_box.close()
+			except Exception:
+				pass
+			self._update_notice_box = None
+		if self.update_alert_dedupe_enabled and self._last_notified_update_version == latest:
+			return
+		if self.update_alert_dedupe_enabled:
+			self._last_notified_update_version = latest
 		msg = CustomMessageBox(
 			self.tr(f"New version %n is available. Open release note page?").replace('%n', latest),
 			parent=self,
 			buttons=(self.tr("Open"), self.tr("Later"))
 		)
-		res = msg.exec()
-		if res == 0:
-			webbrowser.open('https://github.com/Ryan-the-hito/Watermelon/releases')
+		msg.setWindowTitle(self.tr("Update Available"))
+		msg.setWindowModality(Qt.WindowModality.NonModal)
+		msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+		if msg.btns:
+			msg.btns[0].clicked.connect(lambda: webbrowser.open('https://github.com/Ryan-the-hito/Watermelon/releases'))
+		msg.destroyed.connect(self._on_update_notice_destroyed)
+		self._update_notice_box = msg
+		msg.show()
+		msg.raise_()
+		msg.activateWindow()
 
 	# 或者你也可以这样：仅在有更新时展示现有的 WindowUpdate 小窗
 	# self.win_update.show()  # 它会 show() 并 checkupdate()，但建议只 show，然后把 latest 显示出来
@@ -6204,6 +7084,9 @@ QListWidget{{
 		# 可选：记录错误，不弹框打扰用户
 		# print(f"Check update error: {err}")
 		pass
+
+	def _on_update_notice_destroyed(self, _obj=None):
+		self._update_notice_box = None
 
 class window4(QWidget):  # Customization settings
 	def __init__(self):
@@ -6786,7 +7669,10 @@ if __name__ == '__main__':
 	action5.triggered.connect(w2.activate)
 	action6.triggered.connect(w4.activate)
 	action7.triggered.connect(w3.open_file_menu)
+	action8.triggered.connect(w3.assigntoall)
 	btna4.triggered.connect(w3.pin_a_tab)
+	teleprompter_action.triggered.connect(w3.toggle_teleprompter)
+	open_backup_folder_action.triggered.connect(w3.open_current_backup_folder)
 	w3.btn0_1.clicked.connect(w4.activate)
 	w3.btn0_2.clicked.connect(w3.toggle_notes_mode)
 	w3.set_textedit_font(w3._current_font_size, w3._current_font_family)
