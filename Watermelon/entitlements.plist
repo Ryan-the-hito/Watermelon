@@ -10,5 +10,11 @@
   <true/>
   <key>com.apple.security.cs.disable-executable-page-protection</key>
   <true/>
+  <!-- 2026-11-25：用摄像头拍文件（相机窗口）。签名带 hardened runtime 时没有这一条，摄像头会被系统直接拒绝 -->
+  <key>com.apple.security.device.camera</key>
+  <true/>
+  <!-- 2026-11-26：备忘录模式用 osascript 读写 Apple 备忘录。hardened runtime 下要这一条，系统才会弹"允许控制备忘录"，否则直接拒绝 -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
 </dict>
 </plist>
